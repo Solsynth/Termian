@@ -181,8 +181,7 @@ func (m *Model) passwordView() string {
 			}
 		}
 		if p.Challenge.ID != "" && len(visible) == 0 {
-			lines = append(lines, "", m.Styles.Error.Render(
-				"this account needs a passkey, NFC or another device to approve — use device login instead"))
+			lines = append(lines, m.Styles.Muted.Render("no factor left that Termian can complete"))
 		}
 	case stageSecret:
 		name := "secret"
@@ -348,7 +347,11 @@ func (m *Model) updatePasswordMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 			p.used[id] = true
 		}
 		p.Stage = stageFactor
-		m.clearBanner()
+		if len(p.visibleFactors()) == 0 {
+			m.setBanner(noUsableFactorText)
+		} else {
+			m.clearBanner()
+		}
 		return m, m.scheduleChallengePoll()
 
 	case challengeTickMsg:
@@ -478,6 +481,9 @@ func (m *Model) relistFactorsCmd(challengeID string) tea.Cmd {
 		return factorsMsg{factors: factors}
 	})
 }
+
+// noUsableFactorText explains an account whose only factors need another device.
+const noUsableFactorText = "this account needs a passkey, NFC or another device to approve — use device login instead"
 
 // filterFactors keeps only the factors a terminal can complete.
 func filterFactors(factors []api.Factor) []api.Factor {

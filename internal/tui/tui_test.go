@@ -426,6 +426,35 @@ func TestPasswordLoginScenario(t *testing.T) {
 	}
 }
 
+// TestNoUsableFactorExplainsDeviceLogin covers an account whose factors a
+// terminal cannot complete (passkey-only accounts).
+func TestNoUsableFactorExplainsDeviceLogin(t *testing.T) {
+	fake := &fakeAPI{
+		challenge: api.Challenge{ID: "ch-1", StepTotal: 1, StepRemain: 1},
+		factors: []api.Factor{
+			{ID: "f-passkey", Type: api.FactorPasskey, Trustworthy: 2},
+			{ID: "f-nfc", Type: api.FactorNFC, Trustworthy: 2},
+		},
+	}
+	model := NewModelWithScreen(newTestDeps(t, fake), ScreenPassword)
+	model.Width, model.Height, model.sized = 100, 30, true
+	model.Password.Account.SetValue("alice")
+
+	model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	updated, _ := model.Update(challengeMsg{
+		ch:      fake.challenge,
+		factors: fake.factors,
+	})
+	final := updated.(*Model)
+	if !strings.Contains(final.Banner, "use device login instead") {
+		t.Fatalf("banner = %q, want the device-login hint", final.Banner)
+	}
+	if got := final.Password.visibleFactors(); len(got) != 0 {
+		t.Fatalf("visible factors = %v, want none", got)
+	}
+}
+
 // TestDeviceErrorStopsPolling covers a terminal device-flow failure.
 func TestDeviceErrorStopsPolling(t *testing.T) {
 	fake := &fakeAPI{
