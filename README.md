@@ -5,8 +5,10 @@ scriptable CLI over one authentication core. Termian signs in through Stargate,
 either with the RFC 8628 device flow or with a password/TOTP challenge, then
 keeps the session alive by rotating the refresh token.
 
-This slice covers authentication and the session shell only. Feeds, posts and
-chat are separate work.
+Signed in, it browses the public timeline, reads and writes posts, replies,
+reactions and bookmarks, and reads and sends chat messages. Signed out, the
+public timeline and post details stay readable: press `g` on the login screen to
+browse as a guest.
 
 ## Install
 
@@ -40,7 +42,20 @@ moves to the session shell.
 | `termian logout` | Revokes the session server-side and deletes local credentials |
 | `termian whoami` | Prints the account and session |
 | `termian refresh` | Rotates the access token and prints the new expiry |
+| `termian feed` | Lists the public timeline (no session needed) |
+| `termian post <id>` | Prints a post and its replies |
+| `termian publish` | Publishes a post (`--content`, `--file -`, `--publisher`, `--title`) |
+| `termian reply <id>` | Replies to a post |
+| `termian react <id>` | Toggles a reaction (`--symbol`, default `heart`) |
+| `termian save <id>` | Bookmarks a post; `--remove` drops the bookmark |
+| `termian bookmarks` | Lists saved posts |
+| `termian publishers` | Lists the publishers you can post as |
+| `termian chats` | Lists chat rooms with unread counts |
+| `termian chat <room-id>` | Prints a room's messages; `--send --content …` posts one |
 | `termian version` | Prints the build version |
+
+`feed` and `post` read public data, so they work before signing in. Everything
+else needs a session and exits 3 without one.
 
 Flow selection:
 
@@ -65,6 +80,8 @@ Persistent flags:
 | `--verbose` | off | Extra diagnostics on stderr |
 | `--no-tui` | off | Never start the interactive UI |
 | `--device` / `--password` | `--device` | Login flow |
+| `--attachments` | `browser` | `browser`, `preview` or `off` |
+| `--chat-history` | `200` | Messages kept per chat room |
 
 ## JSON output
 
@@ -78,7 +95,20 @@ one line on stderr. Each record carries `type`:
 | `whoami` | `{"type":"account","account","session","server","storage"}` |
 | `refresh` | `{"type":"refreshed","access_expires_at","refresh_expires_at","server","storage"}` |
 | `logout` | `{"type":"logged_out","server","revoked"}` |
+| `feed`, `bookmarks` | `{"type":"post","post":{...}}` per post |
+| `post` | `{"type":"post",...}` then `{"type":"reply","post","reply"}` per reply |
+| `publish`, `reply` | `{"type":"created","post":{...}}` |
+| `react` | `{"type":"reaction","post","symbol","is_present"}` |
+| `save` | `{"type":"bookmark","post","is_bookmarked"}` |
+| `publishers` | `{"type":"publisher","id","name","nick","kind"}` |
+| `chats` | `{"type":"chat_room","room":{...}}` per room |
+| `chat` | `{"type":"chat_message","message":{...}}` oldest first |
+| `chat --send` | `{"type":"chat_sent","message":{...}}` |
 | any failure | `{"type":"error","code","message","status","hint"}` on **stderr** |
+
+`react` follows the server's toggle semantics: posting a symbol that the account
+already reacted with removes the reaction, and `is_present` reports the state
+after the call.
 
 Exit codes:
 
@@ -101,11 +131,13 @@ memory, and the refresh token only exists in the keyring or the credential file.
 `$XDG_CONFIG_HOME/termian/config.toml`, all keys optional:
 
 ```toml
-server    = "https://api.solian.app"
-client_id = "solian"
-scope     = "*"
-store     = "auto"      # auto | keyring | file
-output    = "text"
+server       = "https://api.solian.app"
+client_id    = "solian"
+scope        = "*"
+store        = "auto"      # auto | keyring | file
+output       = "text"
+attachments  = "browser"   # browser | preview | off
+chat_history = 200         # messages kept per chat room
 ```
 
 Precedence: flag > environment > file > defaults.
@@ -116,6 +148,8 @@ Precedence: flag > environment > file > defaults.
 | `TERMIAN_CLIENT_ID` | `client_id` |
 | `TERMIAN_OUTPUT` | `output` |
 | `TERMIAN_STORE` | `store` |
+| `TERMIAN_ATTACHMENTS` | `attachments` |
+| `TERMIAN_CHAT_HISTORY` | `chat_history` |
 | `TERMIAN_CONFIG` | config file location |
 
 A missing config file is fine; a malformed one is a hard error naming the path.
@@ -147,17 +181,67 @@ register your own. The requested scope defaults to `*` and is configurable throu
 ```
 main.go                     entry point
 internal/api                Stargate client: device flow, challenge flow, sessions
+internal/api/content.go     sphere client: timeline, posts, edits, replies, reactions, bookmarks
+internal/api/chat.go        messager client: rooms, messages, edits, reactions
 internal/api/tokensource.go access-token rotation, single-flight, session expiry
 internal/credentials        keyring store with 0600 file fallback
 internal/deviceid           stable device identity
 internal/config             config file + env + flags
 internal/ui                 text/NDJSON renderer and exit codes
 internal/cli                cobra commands and the headless flows
-internal/tui                Bubble Tea app: login, password, session shell
+internal/tui                Bubble Tea app: login, session shell, feed, post, chats
+internal/tui/attach.go      attachment listing, browser hand-off and image previews
 ```
 
-The TUI talks to an `API` interface (`internal/tui/app.go`), which `*api.Client`
-satisfies, so the screens are testable without a server.
+The TUI talks to two interfaces (`internal/tui/app.go`): `AuthAPI` for the login
+panes and `ContentAPI` for the feeds and chats. `*api.Client` satisfies both, so
+the screens are testable without a server.
+
+## TUI keys
+
+| Pane | Keys |
+|---|---|
+| Login | `g` browse as guest, `p` password login, `c` copy code, `o` open browser, `esc` quit |
+| Session shell | `f` timeline, `b` bookmarks, `c` chats, `n` new post, `r` refresh, `l` logout, `q` quit |
+| Any content pane | `tab` next section, `shift+tab` previous section |
+| Feed | `j`/`k` move, `G` last, `enter` open, `r` react, `b` bookmark, `t` timeline/bookmarks, `c` post, `e` edit, `d` delete, `R` reload, `esc` back |
+| Post | `j`/`k` move, `enter` open a reply, `r` react, `b` bookmark, `c` reply, `e` edit, `d` delete, `o` open attachment, `p` preview, `R` reload, `esc` back |
+| Chats | `j`/`k` move, `enter` step into the conversation, `i` write, `R` reload, `tab` sections, `esc` back |
+| Chat room | `j`/`k` move, `k` at the top pages in older history, `g`/`G` jump to either end, `r` react, `i` write, `o` open attachment, `h` back to the room list |
+| Composer | `ctrl+d` post (or save, when editing), `alt+enter` newline, `esc` cancel |
+| Confirmation | `y` confirm, `n`/`esc` cancel |
+
+Write keys are refused locally when browsing as a guest: the status line asks for
+a sign-in instead of failing at the server. Deleting a post asks for
+confirmation first.
+
+## Attachments
+
+`attachments` decides what Termian does with a post's files:
+
+| Mode | Behaviour |
+|---|---|
+| `browser` (default) | Lists name, type and size; `o` hands the file to the system opener |
+| `preview` | Also renders the first image inline in the post pane; `p` re-downloads it |
+| `off` | Hides attachments entirely |
+
+Previews download at most 8 MiB per file and render into 40×10 cells: half
+blocks in true color terminals, a luminance ASCII ramp otherwise. Rendered
+previews are cached for the session.
+
+## Sections
+
+The browsing panes share one workspace, switched with `tab`: **timeline**,
+**chats**, **bookmarks**. The strip at the top of every pane shows where you are.
+
+Chat is a two-column workspace, like the Solian app: rooms on the left with
+unread badges and last-message previews, the conversation on the right. The room
+column owns the keys until `enter` steps into the conversation; `h` returns.
+
+Chat scrollback pages backwards through the room history 50 messages at a time
+and keeps at most `chat_history` messages per room. System events (call presence,
+attachment finalisation, reaction receipts) are filtered out of the transcript,
+so the offset tracks rows read from the server rather than visible messages.
 
 ## Development
 

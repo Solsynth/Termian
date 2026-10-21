@@ -14,6 +14,7 @@ import (
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/colorprofile"
 
 	"src.solsynth.dev/sosys/termian/internal/api"
 	"src.solsynth.dev/sosys/termian/internal/credentials"
@@ -27,6 +28,11 @@ const (
 	ScreenLogin Screen = iota
 	ScreenPassword
 	ScreenHome
+	ScreenFeed
+	ScreenPost
+	ScreenChats
+	ScreenChat
+	ScreenCompose
 )
 
 // String renders the screen name (used in tests and diagnostics).
@@ -38,13 +44,23 @@ func (s Screen) String() string {
 		return "password"
 	case ScreenHome:
 		return "home"
+	case ScreenFeed:
+		return "feed"
+	case ScreenPost:
+		return "post"
+	case ScreenChats:
+		return "chats"
+	case ScreenChat:
+		return "chat"
+	case ScreenCompose:
+		return "compose"
 	default:
 		return "unknown"
 	}
 }
 
-// API is the subset of the Stargate client the TUI depends on; tests fake it.
-type API interface {
+// AuthAPI is the subset of the Stargate client the login panes depend on.
+type AuthAPI interface {
 	RequestDeviceCode(context.Context) (api.DeviceCode, error)
 	PollDeviceToken(context.Context, string) (api.OAuthToken, error)
 	CreateChallenge(context.Context, string) (api.Challenge, error)
@@ -57,6 +73,30 @@ type API interface {
 	Account(context.Context) (api.Account, error)
 }
 
+// ContentAPI is the subset of the Solian gateways the feeds and chats use.
+// Reads work without a session; writes need one.
+type ContentAPI interface {
+	Feed(context.Context, int, int) (api.Page[api.Post], error)
+	Bookmarks(context.Context, int, int) (api.Page[api.Post], error)
+	Post(context.Context, string) (api.Post, error)
+	Replies(context.Context, string, int, int) (api.Page[api.Post], error)
+	CreatePost(context.Context, api.NewPost) (api.Post, error)
+	UpdatePost(context.Context, string, api.PostPatch) (api.Post, error)
+	DeletePost(context.Context, string) error
+	ToggleReaction(context.Context, string, string) (bool, error)
+	Bookmark(context.Context, string) error
+	Unbookmark(context.Context, string) error
+	Publishers(context.Context) ([]api.Publisher, error)
+	ChatRoomList(context.Context, int, int) (api.ChatRooms, error)
+	ChatRoom(context.Context, string) (api.ChatRoom, error)
+	ChatMessages(context.Context, string, int, int) (api.Page[api.ChatMessage], error)
+	ChatSummaryByRoom(context.Context) (map[string]api.ChatSummary, error)
+	SendChatMessage(context.Context, string, api.NewMessage) (api.ChatMessage, error)
+	EditChatMessage(context.Context, string, string, string) (api.ChatMessage, error)
+	DeleteChatMessage(context.Context, string, string) error
+	ToggleChatReaction(context.Context, string, string, string) (bool, error)
+}
+
 // commandTimeout bounds every asynchronous API call made from the UI.
 const commandTimeout = 15 * time.Second
 
@@ -65,7 +105,9 @@ type Deps struct {
 	// Ctx is cancelled when the program exits.
 	Ctx context.Context
 	// API performs the auth calls.
-	API API
+	API AuthAPI
+	// Content performs the feed and chat calls.
+	Content ContentAPI
 	// Tokens owns the access token; nil before the first successful login.
 	Tokens *api.TokenSource
 	// Store persists the refresh token.
@@ -78,6 +120,10 @@ type Deps struct {
 	DeviceID string
 	// Version is the Termian version shown in the UI.
 	Version string
+	// Attachments is the attachment policy: browser, preview or off.
+	Attachments string
+	// ChatHistory is how many messages a chat pane keeps per room.
+	ChatHistory int
 	// PollInterval overrides the server device poll interval (tests).
 	PollInterval time.Duration
 }
@@ -95,7 +141,24 @@ type Model struct {
 	Login    loginModel
 	Password passwordModel
 	Home     homeModel
+	Feed     feedModel
+	Post     postModel
+	Chats    chatsModel
+	Chat     chatModel
+	Compose  composeModel
+	Confirm  confirmModel
 	Deps     Deps
+
+	// guest is set when the session is browsing without a session, so the
+	// write paths ask for a sign-in instead of failing at the server.
+	guest bool
+	// postStack holds the post IDs behind the visible detail pane, so esc can
+	// walk back through drilled-in replies.
+	postStack []string
+	// previews caches rendered attachment previews by file ID.
+	previews map[string][]string
+	// truecolor reports whether the terminal can draw 24-bit previews.
+	truecolor bool
 
 	sized bool
 
@@ -115,6 +178,20 @@ type Snapshot struct {
 	AccountName    string
 	SessionCredsOK bool
 	RefreshBlocked bool
+	Guest          bool
+	FeedCount      int
+	FeedSelected   int
+	PostID         string
+	PostSelected   int
+	ReplyCount     int
+	ChatCount      int
+	ChatRoomID     string
+	MessageCount   int
+	ChatFocused    bool
+	Section        string
+	Composing      bool
+	Editing        bool
+	Confirming     bool
 }
 
 // Snapshot returns the current UI state under the model lock.
@@ -131,6 +208,20 @@ func (m *Model) Snapshot() Snapshot {
 		BannerOK:       m.BannerOK,
 		AccountName:    m.Home.account.Name,
 		RefreshBlocked: m.Home.refreshDisabled,
+		Guest:          m.guest,
+		FeedCount:      len(m.Feed.items),
+		FeedSelected:   m.Feed.selected,
+		PostID:         m.Post.post.ID,
+		PostSelected:   m.Post.selected,
+		ReplyCount:     len(m.Post.replies),
+		ChatCount:      len(m.Chats.rooms),
+		ChatRoomID:     m.Chat.room.ID,
+		MessageCount:   len(m.Chat.messages),
+		ChatFocused:    m.Chats.focused,
+		Section:        m.currentSection().String(),
+		Composing:      m.Compose.active,
+		Editing:        m.Compose.editing != nil,
+		Confirming:     m.Confirm.active,
 	}
 	if m.Deps.Tokens != nil {
 		snap.SessionCredsOK = m.Deps.Tokens.Credentials() != nil
@@ -149,15 +240,23 @@ func NewModelWithScreen(deps Deps, screen Screen) *Model {
 	sp.Spinner = spinner.Dot
 
 	m := &Model{
-		Screen:  screen,
-		Dark:    true,
-		Spinner: sp,
-		Deps:    deps,
-		Login:   newLoginModel(),
-		Home:    newHomeModel(),
+		Screen:   screen,
+		Dark:     true,
+		Spinner:  sp,
+		Deps:     deps,
+		Login:    newLoginModel(),
+		Home:     newHomeModel(),
+		Feed:     newFeedModel(),
+		Post:     newPostModel(),
+		Chats:    newChatsModel(),
+		Chat:     newChatModel(),
+		Compose:  newComposeModel(),
+		previews: map[string][]string{},
 	}
 	m.Styles = newStyles(m.Dark)
 	m.Password = newPasswordModel(m.Styles)
+	m.Compose.input.SetStyles(textareaStyles(m.Styles))
+	m.Chat.input.SetStyles(textareaStyles(m.Styles))
 	if screen == ScreenPassword {
 		m.Password.reset()
 	}
@@ -167,13 +266,31 @@ func NewModelWithScreen(deps Deps, screen Screen) *Model {
 // Init implements tea.Model.
 func (m *Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{m.Spinner.Tick, tea.RequestBackgroundColor}
-	if m.Screen == ScreenHome && m.Deps.Tokens != nil {
+	switch {
+	case m.Screen == ScreenHome && m.Deps.Tokens != nil:
 		cmds = append(cmds, tea.Tick(time.Second, func(t time.Time) tea.Msg { return homeTickMsg{at: t} }))
 		cmds = append(cmds, m.fetchAccountCmd())
-		return tea.Batch(cmds...)
+	case m.Screen == ScreenFeed, m.Screen == ScreenPost, m.Screen == ScreenChats:
+		cmds = append(cmds, m.initContentCmd())
+	default:
+		cmds = append(cmds, m.startDeviceFlowCmd())
 	}
-	cmds = append(cmds, m.startDeviceFlowCmd())
 	return tea.Batch(cmds...)
+}
+
+// initContentCmd loads the pane the program starts on.
+func (m *Model) initContentCmd() tea.Cmd {
+	switch m.Screen {
+	case ScreenFeed:
+		return m.loadFeedCmd(m.Feed.mode, 0)
+	case ScreenChats:
+		return m.loadChatsCmd()
+	case ScreenPost:
+		if m.Post.post.ID != "" {
+			return m.loadPostCmd(m.Post.post.ID, true)
+		}
+	}
+	return nil
 }
 
 // View implements tea.Model.
@@ -202,14 +319,37 @@ func (m *Model) render() string {
 		body = m.passwordView()
 	case ScreenHome:
 		body = m.homeView()
+	case ScreenFeed:
+		body = m.feedView()
+	case ScreenPost:
+		body = m.postView()
+	case ScreenChats:
+		body = m.chatsView()
+	case ScreenChat:
+		body = m.chatsView()
+	case ScreenCompose:
+		body = m.composeView()
 	}
-	if m.Banner != "" {
-		body = lipgloss.JoinVertical(lipgloss.Center, body, "", m.bannerView())
+	// The login cards are centered; the content panes start at the top left and
+	// keep the status line on the last row.
+	centered := m.Screen == ScreenLogin || m.Screen == ScreenPassword
+	if m.Confirm.active {
+		// The modal takes the status line: it owns the answer.
+		body = lipgloss.JoinVertical(lipgloss.Left, body, "", m.confirmView())
+	} else if m.Banner != "" {
+		if centered {
+			body = lipgloss.JoinVertical(lipgloss.Center, body, "", m.bannerView())
+		} else {
+			body = lipgloss.JoinVertical(lipgloss.Left, body, "", m.bannerView())
+		}
 	}
 	if !m.sized {
 		return body
 	}
-	return lipgloss.Place(m.Width, m.Height, lipgloss.Center, lipgloss.Center, body)
+	if centered {
+		return lipgloss.Place(m.Width, m.Height, lipgloss.Center, lipgloss.Center, body)
+	}
+	return lipgloss.Place(m.Width, m.Height, lipgloss.Left, lipgloss.Top, body)
 }
 
 // bannerView renders the status line.
@@ -269,6 +409,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Login.setWidth(cardWidth(DeviceCardWidth, msg.Width))
 		m.Password.setWidth(cardWidth(PasswordCardWidth, msg.Width))
 		m.Home.setWidth(cardWidth(HomeCardWidth, msg.Width))
+		m.Chat.setWidth(m.contentWidth())
+		m.Compose.setWidth(m.contentWidth())
+		return m, nil
+
+	case tea.ColorProfileMsg:
+		// True color terminals get half-block previews; others get ASCII art.
+		m.truecolor = msg.Profile == colorprofile.TrueColor
 		return m, nil
 
 	case tea.BackgroundColorMsg:
@@ -277,6 +424,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Dark = dark
 			m.Styles = newStyles(dark)
 			m.Password.applyStyles(m.Styles)
+			m.Chat.input.SetStyles(textareaStyles(m.Styles))
+			m.Compose.input.SetStyles(textareaStyles(m.Styles))
 		}
 		return m, nil
 
@@ -292,8 +441,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m.handleScreenMsg(msg)
 }
 
-// handleKey routes a key press to the active screen.
+// handleKey routes a key press to the active screen, or to the confirmation
+// modal when one is open.
 func (m *Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if m.Confirm.active {
+		return m.updateConfirmKey(key)
+	}
+	// Tab switches sections from every content pane.
+	switch m.Screen {
+	case ScreenFeed, ScreenPost, ScreenChats, ScreenChat:
+		if updated, cmd, handled := m.sectionKey(key); handled {
+			return updated, cmd
+		}
+	}
 	switch m.Screen {
 	case ScreenLogin:
 		return m.updateLoginKey(key)
@@ -301,19 +461,56 @@ func (m *Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.updatePasswordKey(key)
 	case ScreenHome:
 		return m.updateHomeKey(key)
+	case ScreenFeed:
+		return m.updateFeedKey(key)
+	case ScreenPost:
+		return m.updatePostKey(key)
+	case ScreenChats, ScreenChat:
+		return m.updateChatKey(key)
+	case ScreenCompose:
+		return m.updateComposeKey(key)
 	}
 	return m, nil
 }
 
 // handleScreenMsg routes asynchronous results to the pane that owns them.
 func (m *Model) handleScreenMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg.(type) {
+	switch msg := msg.(type) {
 	case deviceCodeMsg, pollDueMsg, deviceTokenMsg, browserDoneMsg:
 		return m.updateLoginMsg(msg)
 	case challengeMsg, factorsMsg, factorCodeMsg, stepResultMsg, exchangedMsg, challengeTickMsg:
 		return m.updatePasswordMsg(msg)
 	case authedMsg, refreshedMsg, loggedOutMsg, homeTickMsg:
 		return m.updateHomeMsg(msg)
+	case feedLoadedMsg:
+		return m.updateFeedMsg(msg)
+	case reactionMsg:
+		m.applyReaction(msg)
+		return m, nil
+	case bookmarkMsg:
+		m.applyBookmark(msg)
+		return m, nil
+	case postLoadedMsg:
+		return m.updatePostMsg(msg)
+	case roomsLoadedMsg:
+		return m.updateChatsMsg(msg)
+	case messagesLoadedMsg, sentMessageMsg, chatReactionMsg:
+		return m.updateChatMsg(msg)
+	case postCreatedMsg, replyCreatedMsg, postUpdatedMsg:
+		return m.updateComposeMsg(msg)
+	case postDeletedMsg:
+		m.applyPostDeleted(msg)
+		return m, nil
+	case previewLoadedMsg:
+		m.storePreview(msg)
+		return m, nil
+	case attachmentOpenMsg:
+		if msg.err != nil {
+			m.setBanner("could not open the attachment: " + msg.err.Error())
+			return m, nil
+		}
+		m.setNotice("opened in the browser")
+		return m, nil
 	}
 	return m, nil
 }
@@ -451,4 +648,37 @@ func countdown(d time.Duration) string {
 	}
 	total := int(d.Seconds())
 	return fmt.Sprintf("%02d:%02d", total/60, total%60)
+}
+
+// resetContentPanes drops every cached feed and chat view, so a new identity
+// never sees the previous one's data.
+func (m *Model) resetContentPanes() {
+	m.Feed = newFeedModel()
+	m.Post = newPostModel()
+	m.Chats = newChatsModel()
+	m.Chat = newChatModel()
+	m.Chat.setWidth(m.contentWidth())
+	m.Compose = newComposeModel()
+	m.Compose.setWidth(m.contentWidth())
+	m.Compose.input.SetStyles(textareaStyles(m.Styles))
+	m.Chat.input.SetStyles(textareaStyles(m.Styles))
+	m.postStack = nil
+}
+
+// enterGuest switches to guest browsing: public timelines and post details
+// stay available, everything that needs a session asks for a sign-in.
+func (m *Model) enterGuest() tea.Cmd {
+	m.guest = true
+	m.resetContentPanes()
+	m.showScreen(ScreenFeed)
+	return m.loadFeedCmd(feedTimeline, 0)
+}
+
+// leaveGuest drops the guest session and returns to the device login pane.
+func (m *Model) leaveGuest() tea.Cmd {
+	m.guest = false
+	m.Login = newLoginModel()
+	m.Login.setWidth(cardWidth(DeviceCardWidth, m.Width))
+	m.showScreen(ScreenLogin)
+	return m.startDeviceFlowCmd()
 }

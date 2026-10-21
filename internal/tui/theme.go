@@ -1,6 +1,9 @@
 package tui
 
-import "charm.land/lipgloss/v2"
+import (
+	"charm.land/bubbles/v2/textarea"
+	"charm.land/lipgloss/v2"
+)
 
 // Card widths, in terminal cells.
 const (
@@ -79,4 +82,20 @@ func cardWidth(preferred, available int) int {
 		return inner
 	}
 	return preferred
+}
+
+// textareaStyles maps the palette onto a multi-line editor.
+func textareaStyles(styles Styles) textarea.Styles {
+	s := textarea.DefaultDarkStyles()
+	s.Focused.Base = lipgloss.NewStyle()
+	s.Focused.CursorLine = lipgloss.NewStyle()
+	s.Focused.Prompt = styles.Accent
+	s.Focused.Text = styles.Foreground
+	s.Focused.Placeholder = styles.Muted
+	s.Blurred.Base = lipgloss.NewStyle()
+	s.Blurred.CursorLine = lipgloss.NewStyle()
+	s.Blurred.Text = styles.Foreground
+	s.Blurred.Placeholder = styles.Muted
+	s.Cursor.Color = styles.Accent.GetForeground()
+	return s
 }

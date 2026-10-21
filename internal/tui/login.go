@@ -57,7 +57,7 @@ func (m *Model) loginView() string {
 	}
 
 	lines = append(lines, "")
-	lines = append(lines, m.Styles.Hint.Render("c copy code · o open browser · p password login · esc quit"))
+	lines = append(lines, m.Styles.Hint.Render("c copy code · o open browser · p password login · g browse as guest · esc quit"))
 
 	card := m.Styles.Card.Width(l.width).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
 	return card
@@ -72,6 +72,8 @@ func (m *Model) updateLoginKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "esc":
 		return m, tea.Quit
+	case "g":
+		return m, m.enterGuest()
 	case "c":
 		if !m.Login.hasCode {
 			return m, nil

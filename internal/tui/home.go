@@ -83,11 +83,17 @@ func (m *Model) homeView() string {
 		lines = append(lines, m.Styles.Muted.Render(h.accountID()))
 		lines = append(lines, m.Styles.Foreground.Render(h.profileLine()))
 		lines = append(lines, "")
+		lines = append(lines, m.Styles.Label.Render("browse"))
+		lines = append(lines, m.Styles.Foreground.Render("f  timeline"))
+		lines = append(lines, m.Styles.Foreground.Render("b  bookmarks"))
+		lines = append(lines, m.Styles.Foreground.Render("c  chats"))
+		lines = append(lines, m.Styles.Foreground.Render("n  new post"))
+		lines = append(lines, "")
 		lines = append(lines, m.sessionLines()...)
 	}
 
 	lines = append(lines, "")
-	lines = append(lines, m.Styles.Hint.Render("r refresh · l logout · q quit"))
+	lines = append(lines, m.Styles.Hint.Render("f feed · b bookmarks · c chats · n post · r refresh · l logout · q quit"))
 
 	return m.Styles.Card.Width(h.width).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
 }
@@ -184,6 +190,29 @@ func (m *Model) updateHomeKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "l":
 		m.clearBanner()
 		return m, m.logoutCmd()
+	case "f":
+		m.Feed.reset(feedTimeline)
+		m.showScreen(ScreenFeed)
+		return m, m.loadFeedCmd(feedTimeline, 0)
+	case "b":
+		if err := m.sessionGuard("bookmarks need a session"); err != nil {
+			return m, nil
+		}
+		m.Feed.reset(feedBookmarks)
+		m.showScreen(ScreenFeed)
+		return m, m.loadFeedCmd(feedBookmarks, 0)
+	case "c":
+		if err := m.sessionGuard("chats need a session"); err != nil {
+			return m, nil
+		}
+		m.Chats = newChatsModel()
+		m.showScreen(ScreenChats)
+		return m, m.loadChatsCmd()
+	case "n":
+		if err := m.sessionGuard("sign in to post"); err != nil {
+			return m, nil
+		}
+		return m, m.openCompose(nil)
 	}
 	return m, nil
 }
@@ -219,6 +248,8 @@ func (m *Model) updateHomeMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.refreshing = false
 		h.identity = api.Identity{}
 		h.account = api.Account{}
+		m.guest = false
+		m.resetContentPanes()
 		m.Login = newLoginModel()
 		m.Login.setWidth(cardWidth(DeviceCardWidth, m.Width))
 		m.Password.reset()
@@ -250,6 +281,7 @@ func (m *Model) handleAuthed(msg authedMsg) (tea.Model, tea.Cmd) {
 	h.account = msg.acc
 	h.loaded = true
 	h.refreshDisabled = false
+	m.guest = false
 
 	m.Screen = ScreenHome
 	m.clearBanner()
