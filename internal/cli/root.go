@@ -46,9 +46,11 @@ type options struct {
 	timeout    time.Duration
 	verbose    bool
 
-	noTUI    bool
-	device   bool
-	password bool
+	noTUI       bool
+	device      bool
+	password    bool
+	attachments string
+	chatHistory int
 }
 
 // app is the per-invocation runtime shared by all commands.
@@ -136,6 +138,8 @@ func (a *app) rootCommand() *cobra.Command {
 	pf.BoolVar(&a.opts.noTUI, "no-tui", false, "never start the interactive UI")
 	pf.BoolVar(&a.opts.device, "device", false, "device-flow login (default)")
 	pf.BoolVar(&a.opts.password, "password", false, "password/TOTP challenge login")
+	pf.StringVar(&a.opts.attachments, "attachments", "", "attachment handling: browser, preview or off")
+	pf.IntVar(&a.opts.chatHistory, "chat-history", 0, "messages kept per chat room")
 
 	root.AddCommand(
 		a.loginCommand(),
@@ -143,6 +147,16 @@ func (a *app) rootCommand() *cobra.Command {
 		a.whoamiCommand(),
 		a.refreshCommand(),
 		a.versionCommand(),
+		a.feedCommand(),
+		a.showPostCommand(),
+		a.publishCommand(),
+		a.replyCommand(),
+		a.saveCommand(),
+		a.reactCommand(),
+		a.bookmarksCommand(),
+		a.publishersCommand(),
+		a.chatsCommand(),
+		a.chatCommand(),
 	)
 	return root
 }
@@ -188,11 +202,13 @@ func (a *app) prepare() error {
 	}
 
 	cfg, err := config.Load(config.Overrides{
-		Server:   a.opts.server,
-		ClientID: a.opts.clientID,
-		Store:    a.opts.store,
-		Output:   a.opts.output,
-		Path:     a.opts.configPath,
+		Server:      a.opts.server,
+		ClientID:    a.opts.clientID,
+		Store:       a.opts.store,
+		Output:      a.opts.output,
+		Attachments: a.opts.attachments,
+		ChatHistory: a.opts.chatHistory,
+		Path:        a.opts.configPath,
 	})
 	if err != nil {
 		return err
@@ -245,6 +261,7 @@ func (a *app) prepare() error {
 
 	a.verbosef("server=%s client_id=%s store=%s output=%s device=%s",
 		cfg.Server, cfg.ClientID, store.Backend, cfg.Output, device.ID)
+	a.verbosef("attachments=%s chat_history=%d", cfg.Attachments, cfg.ChatHistory)
 	a.verbosef("storage: %s", store.Describe(cfg.Server))
 	if creds != nil {
 		a.verbosef("stored session: method=%s account=%s obtained=%s",
@@ -297,14 +314,17 @@ func (a *app) runLogin(cmd *cobra.Command) error {
 // runTUI starts the interactive client.
 func (a *app) runTUI(ctx context.Context) error {
 	return tui.Run(tui.Deps{
-		Ctx:      ctx,
-		API:      a.client,
-		Tokens:   a.tokens,
-		Store:    a.store,
-		Server:   a.cfg.Server,
-		ClientID: a.cfg.ClientID,
-		DeviceID: a.device.ID,
-		Version:  version.Version,
+		Ctx:         ctx,
+		API:         a.client,
+		Content:     a.client,
+		Tokens:      a.tokens,
+		Store:       a.store,
+		Server:      a.cfg.Server,
+		ClientID:    a.cfg.ClientID,
+		DeviceID:    a.device.ID,
+		Version:     version.Version,
+		Attachments: a.cfg.Attachments,
+		ChatHistory: a.cfg.ChatHistory,
 	})
 }
 

@@ -29,6 +29,9 @@ type fakeServer struct {
 	twoFactor bool
 	// steps records every submitted factor ID, in order.
 	steps []string
+	// created and sent record the content write payloads.
+	created []map[string]any
+	sent    []map[string]any
 }
 
 // newFakeServer starts the stand-in and points XDG at a temp home.
@@ -139,6 +142,59 @@ func (f *fakeServer) handle(w http.ResponseWriter, r *http.Request) {
 	case path == "/accounts/me":
 		io.WriteString(w, `{"id":"acc-1","name":"alice","nick":"Alice","perk_level":2,
 			"profile":{"level":7,"experience":1234,"created_at":"2024-01-02T03:04:05Z"}}`)
+
+	case path == "/sphere/posts" && r.Method == http.MethodGet:
+		w.Header().Set("X-Total", "2")
+		io.WriteString(w, `[{"id":"p1","content":"hello world","publisher":{"id":"u1","name":"alice","nick":"Alice"},"reactions_count":{"heart":2}},
+			{"id":"p2","content":"second post","publisher":{"id":"u2","name":"bob","nick":"Bob"}}]`)
+
+	case path == "/sphere/posts" && r.Method == http.MethodPost:
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		f.created = append(f.created, body)
+		io.WriteString(w, `{"id":"new-1","content":"published","publisher":{"id":"u1","name":"alice","nick":"Alice"}}`)
+
+	case path == "/sphere/posts/p1" && r.Method == http.MethodGet:
+		io.WriteString(w, `{"id":"p1","content":"hello world","publisher":{"id":"u1","name":"alice","nick":"Alice"},
+			"replies_count":1,"reactions_count":{"heart":2},"is_bookmarked":false}`)
+
+	case path == "/sphere/posts/p1/replies":
+		w.Header().Set("X-Total", "1")
+		io.WriteString(w, `[{"id":"r1","content":"a reply","publisher":{"id":"u2","name":"bob","nick":"Bob"},"replied_post_id":"p1"}]`)
+
+	case path == "/sphere/posts/p1/reactions" && r.Method == http.MethodPost:
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusNoContent)
+
+	case strings.HasSuffix(path, "/bookmark") && r.Method == http.MethodPost:
+		w.WriteHeader(http.StatusNoContent)
+
+	case strings.HasSuffix(path, "/bookmark") && r.Method == http.MethodDelete:
+		w.WriteHeader(http.StatusNoContent)
+
+	case path == "/sphere/posts/bookmarks":
+		w.Header().Set("X-Total", "1")
+		io.WriteString(w, `[{"id":"p1","content":"hello world","is_bookmarked":true,"publisher":{"id":"u1","name":"alice","nick":"Alice"}}]`)
+
+	case path == "/sphere/publishers":
+		io.WriteString(w, `[{"id":"pub-1","name":"alice","nick":"Alice","type":0}]`)
+
+	case path == "/messager/chat":
+		io.WriteString(w, `{"rooms":[{"id":"r1","name":"General","type":0}],"groups":[]}`)
+
+	case path == "/messager/chat/summary":
+		io.WriteString(w, `{"r1":{"unread_count":3,"has_unread":true,"last_message":{"id":"m0","content":"hi there","sender":{"account":{"name":"alice","nick":"Alice"}}}}}`)
+
+	case path == "/messager/chat/r1/messages" && r.Method == http.MethodGet:
+		w.Header().Set("X-Total", "2")
+		io.WriteString(w, `[{"id":"m2","chat_room_id":"r1","type":"text","content":"newest","created_at":"2026-01-01T00:00:00Z","sender":{"account":{"name":"bob","nick":"Bob"}}},
+			{"id":"m1","chat_room_id":"r1","type":"text","content":"oldest","created_at":"2025-12-31T00:00:00Z","sender":{"account":{"name":"alice","nick":"Alice"}}}]`)
+
+	case path == "/messager/chat/r1/messages" && r.Method == http.MethodPost:
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		f.sent = append(f.sent, body)
+		io.WriteString(w, `{"id":"m3","chat_room_id":"r1","type":"text","content":"sent","sender":{"account":{"name":"alice","nick":"Alice"}}}`)
 
 	case path == "/sessions/current" && r.Method == http.MethodDelete:
 		f.revoked = true
