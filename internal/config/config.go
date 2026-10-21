@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/adrg/xdg"
 	"github.com/pelletier/go-toml/v2"
@@ -20,15 +21,22 @@ const (
 	DefaultScope    = "*"
 	DefaultStore    = "auto"
 	DefaultOutput   = "text"
+	// DefaultAttachments decides what the TUI does with post attachments:
+	// hand them to the browser, render an inline preview, or show only names.
+	DefaultAttachments = "browser"
+	// DefaultChatHistory is how many messages a chat pane keeps per room.
+	DefaultChatHistory = 200
 )
 
 // Env names read by Load.
 const (
-	EnvServer   = "TERMIAN_SERVER"
-	EnvClientID = "TERMIAN_CLIENT_ID"
-	EnvStore    = "TERMIAN_STORE"
-	EnvOutput   = "TERMIAN_OUTPUT"
-	EnvConfig   = "TERMIAN_CONFIG"
+	EnvServer      = "TERMIAN_SERVER"
+	EnvClientID    = "TERMIAN_CLIENT_ID"
+	EnvStore       = "TERMIAN_STORE"
+	EnvOutput      = "TERMIAN_OUTPUT"
+	EnvAttachments = "TERMIAN_ATTACHMENTS"
+	EnvChatHistory = "TERMIAN_CHAT_HISTORY"
+	EnvConfig      = "TERMIAN_CONFIG"
 )
 
 // Config is the fully resolved runtime configuration.
@@ -38,6 +46,10 @@ type Config struct {
 	Scope    string
 	Store    string
 	Output   string
+	// Attachments is browser, preview or off.
+	Attachments string
+	// ChatHistory is the number of messages kept per chat room.
+	ChatHistory int
 	// Path is the configuration file actually consulted; empty when no file
 	// was read and defaults were used.
 	Path string
@@ -48,21 +60,25 @@ type Config struct {
 
 // Overrides carries flag values; empty strings mean "not set".
 type Overrides struct {
-	Server   string
-	ClientID string
-	Store    string
-	Output   string
+	Server      string
+	ClientID    string
+	Store       string
+	Output      string
+	Attachments string
+	ChatHistory int
 	// Path overrides the configuration file location (--config).
 	Path string
 }
 
 // file mirrors the on-disk TOML schema; every key is optional.
 type file struct {
-	Server   *string `toml:"server"`
-	ClientID *string `toml:"client_id"`
-	Scope    *string `toml:"scope"`
-	Store    *string `toml:"store"`
-	Output   *string `toml:"output"`
+	Server      *string `toml:"server"`
+	ClientID    *string `toml:"client_id"`
+	Scope       *string `toml:"scope"`
+	Store       *string `toml:"store"`
+	Output      *string `toml:"output"`
+	Attachments *string `toml:"attachments"`
+	ChatHistory *int    `toml:"chat_history"`
 }
 
 // Load resolves the configuration.
@@ -71,11 +87,13 @@ type file struct {
 // error names the offending path.
 func Load(over Overrides) (Config, error) {
 	cfg := Config{
-		Server:   DefaultServer,
-		ClientID: DefaultClientID,
-		Scope:    DefaultScope,
-		Store:    DefaultStore,
-		Output:   DefaultOutput,
+		Server:      DefaultServer,
+		ClientID:    DefaultClientID,
+		Scope:       DefaultScope,
+		Store:       DefaultStore,
+		Output:      DefaultOutput,
+		Attachments: DefaultAttachments,
+		ChatHistory: DefaultChatHistory,
 	}
 
 	path, explicit, err := resolvePath(over.Path)
@@ -146,6 +164,10 @@ func applyFile(path string, explicit bool, cfg *Config) (bool, error) {
 	setIfPresent(&cfg.Scope, f.Scope)
 	setIfPresent(&cfg.Store, f.Store)
 	setIfPresent(&cfg.Output, f.Output)
+	setIfPresent(&cfg.Attachments, f.Attachments)
+	if f.ChatHistory != nil {
+		cfg.ChatHistory = *f.ChatHistory
+	}
 	return true, nil
 }
 
@@ -155,6 +177,12 @@ func applyEnv(cfg *Config) {
 	setIfPresent(&cfg.ClientID, nonEmpty(os.Getenv(EnvClientID)))
 	setIfPresent(&cfg.Store, nonEmpty(os.Getenv(EnvStore)))
 	setIfPresent(&cfg.Output, nonEmpty(os.Getenv(EnvOutput)))
+	setIfPresent(&cfg.Attachments, nonEmpty(os.Getenv(EnvAttachments)))
+	if raw := os.Getenv(EnvChatHistory); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil {
+			cfg.ChatHistory = n
+		}
+	}
 }
 
 // applyOverrides overlays flag values.
@@ -163,6 +191,10 @@ func applyOverrides(cfg *Config, over Overrides) {
 	setIfPresent(&cfg.ClientID, nonEmpty(over.ClientID))
 	setIfPresent(&cfg.Store, nonEmpty(over.Store))
 	setIfPresent(&cfg.Output, nonEmpty(over.Output))
+	setIfPresent(&cfg.Attachments, nonEmpty(over.Attachments))
+	if over.ChatHistory > 0 {
+		cfg.ChatHistory = over.ChatHistory
+	}
 }
 
 // validate rejects unusable values early, with actionable messages.
@@ -176,6 +208,14 @@ func (c *Config) validate() error {
 	case "text", "json":
 	default:
 		return fmt.Errorf("invalid output mode %q (want text or json)", c.Output)
+	}
+	switch c.Attachments {
+	case "browser", "preview", "off":
+	default:
+		return fmt.Errorf("invalid attachments mode %q (want browser, preview or off)", c.Attachments)
+	}
+	if c.ChatHistory <= 0 {
+		return fmt.Errorf("chat_history must be positive, got %d", c.ChatHistory)
 	}
 	if c.Server == "" {
 		return errors.New("server must not be empty")
