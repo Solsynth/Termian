@@ -133,27 +133,89 @@ func (c *Client) endpoint(path string) string {
 
 // doJSON performs a JSON request and decodes the response into out (if non-nil).
 func (c *Client) doJSON(ctx context.Context, method, path string, body, out any) error {
-	var reader io.Reader
-	if body != nil {
-		buf, err := json.Marshal(body)
-		if err != nil {
-			return fmt.Errorf("encode request body: %w", err)
-		}
-		reader = bytes.NewReader(buf)
+	_, err := c.doJSONPage(ctx, method, path, body, out)
+	return err
+}
+
+// doRoot performs a JSON request against the API root, for the service
+// gateways (/sphere, /messager, /passport, /metoer) that live beside /stargate.
+func (c *Client) doRoot(ctx context.Context, method, path string, body, out any) error {
+	_, err := c.doRootPage(ctx, method, path, body, out)
+	return err
+}
+
+// doJSONPage performs a JSON request and reports the response metadata, which
+// carries the pagination total and the status code.
+func (c *Client) doJSONPage(ctx context.Context, method, path string, body, out any) (response, error) {
+	reader, err := jsonBody(body)
+	if err != nil {
+		return response{}, err
 	}
-	return c.do(ctx, method, path, "application/json", reader, out)
+	return c.doAt(ctx, c.endpoint(path), method, path, "application/json", reader, out)
+}
+
+// doRootPage is doJSONPage against the API root.
+func (c *Client) doRootPage(ctx context.Context, method, path string, body, out any) (response, error) {
+	reader, err := jsonBody(body)
+	if err != nil {
+		return response{}, err
+	}
+	return c.doAt(ctx, c.rootEndpoint(path), method, path, "application/json", reader, out)
+}
+
+// doRootStatus performs a bodyless JSON request against the API root and
+// reports the status code, which some toggle endpoints use as their answer.
+func (c *Client) doRootStatus(ctx context.Context, method, path string, body any) (response, error) {
+	return c.doRootPage(ctx, method, path, body, nil)
+}
+
+// response is the metadata of a completed request.
+type response struct {
+	Status int
+	Header http.Header
+}
+
+// jsonBody encodes body, returning nil for a bodyless request.
+func jsonBody(body any) (io.Reader, error) {
+	if body == nil {
+		return nil, nil
+	}
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("encode request body: %w", err)
+	}
+	return bytes.NewReader(buf), nil
+}
+
+// rootEndpoint resolves a path against the API root. The service gateways
+// (/sphere, /messager, /passport) are siblings of the auth gateway, so the
+// gateway segment is dropped from the base path.
+func (c *Client) rootEndpoint(path string) string {
+	base := *c.Base
+	base.Path = strings.TrimSuffix(strings.TrimRight(base.Path, "/"), gatewayPath)
+	base.RawPath = ""
+	return base.String() + "/" + strings.TrimLeft(path, "/")
 }
 
 // doForm performs a form-urlencoded POST.
 func (c *Client) doForm(ctx context.Context, path string, form url.Values, out any) error {
-	return c.do(ctx, http.MethodPost, path, "application/x-www-form-urlencoded", strings.NewReader(form.Encode()), out)
+	_, err := c.doAt(ctx, c.endpoint(path), http.MethodPost, path,
+		"application/x-www-form-urlencoded", strings.NewReader(form.Encode()), out)
+	return err
 }
 
 // do executes the request and maps failures onto the package error types.
 func (c *Client) do(ctx context.Context, method, path, contentType string, body io.Reader, out any) error {
-	req, err := http.NewRequestWithContext(ctx, method, c.endpoint(path), body)
+	_, err := c.doAt(ctx, c.endpoint(path), method, path, contentType, body, out)
+	return err
+}
+
+// doAt executes a request against an absolute URL and returns the response
+// metadata.
+func (c *Client) doAt(ctx context.Context, url, method, path, contentType string, body io.Reader, out any) (response, error) {
+	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
-		return fmt.Errorf("build request: %w", err)
+		return response{}, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", c.UA)
@@ -167,27 +229,28 @@ func (c *Client) do(ctx context.Context, method, path, contentType string, body 
 	res, err := c.httpClient().Do(req)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ctxErr
+			return response{}, ctxErr
 		}
-		return &TransportError{Err: err}
+		return response{}, &TransportError{Err: err}
 	}
 	defer func() { _ = res.Body.Close() }()
+	meta := response{Status: res.StatusCode, Header: res.Header}
 
 	payload, err := io.ReadAll(io.LimitReader(res.Body, 4<<20))
 	if err != nil {
-		return &TransportError{Err: err}
+		return meta, &TransportError{Err: err}
 	}
 
 	if res.StatusCode < 200 || res.StatusCode > 299 {
-		return decodeError(res.StatusCode, payload)
+		return meta, decodeError(res.StatusCode, payload)
 	}
 	if out == nil || len(bytes.TrimSpace(payload)) == 0 {
-		return nil
+		return meta, nil
 	}
 	if err := json.Unmarshal(payload, out); err != nil {
-		return &MalformedResponseError{Path: path, Err: err}
+		return meta, &MalformedResponseError{Path: path, Err: err}
 	}
-	return nil
+	return meta, nil
 }
 
 // httpClient returns the configured HTTP client.

@@ -31,6 +31,17 @@ const (
 	RecordRefreshed     = "refreshed"
 	RecordLoggedOut     = "logged_out"
 	RecordError         = "error"
+
+	// Content records: the timeline, posts and chats.
+	RecordPost        = "post"
+	RecordReply       = "reply"
+	RecordCreated     = "created"
+	RecordBookmark    = "bookmark"
+	RecordReaction    = "reaction"
+	RecordPublisher   = "publisher"
+	RecordChatRoom    = "chat_room"
+	RecordChatMessage = "chat_message"
+	RecordChatSent    = "chat_sent"
 )
 
 // UsageError reports an invalid invocation, so callers can map it to exit 2
