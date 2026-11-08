@@ -11,23 +11,17 @@ import (
 
 // contentWidth is the usable text width inside a pane, given the terminal.
 func (m *Model) contentWidth() int {
-	w := m.Width - 6
+	w := m.Width - 4
 	if w < 20 {
 		w = 20
-	}
-	if w > 110 {
-		w = 110
 	}
 	return w
 }
 
 // bodyHeight is how many lines a pane body may use, leaving room for the
-// title, the hint and the status line.
+// header and footer shell borders.
 func (m *Model) bodyHeight() int {
-	h := m.Height - 6
-	if m.Banner != "" {
-		h -= 2
-	}
+	h := m.Height - 4
 	if h < 3 {
 		h = 3
 	}
@@ -38,7 +32,8 @@ func (m *Model) bodyHeight() int {
 // and a hint row.
 func (m *Model) pane(title, right string, body []string, hint string) string {
 	width := m.contentWidth()
-	body = clipLines(body, m.bodyHeight())
+	height := m.bodyHeight()
+
 	head := m.Styles.Title.Render(title)
 	if right != "" {
 		pad := width - ansi.StringWidth(title) - ansi.StringWidth(right)
@@ -48,12 +43,13 @@ func (m *Model) pane(title, right string, body []string, hint string) string {
 		head += strings.Repeat(" ", pad) + m.Styles.Muted.Render(right)
 	}
 
-	lines := make([]string, 0, len(body)+4)
-	lines = append(lines, m.sectionHeader(), head, "")
+	headerLines := []string{m.sectionHeader(), head, ""}
+	contentHeight := max(1, height-len(headerLines))
+	body = clipLines(body, contentHeight)
+
+	lines := make([]string, 0, len(headerLines)+len(body))
+	lines = append(lines, headerLines...)
 	lines = append(lines, body...)
-	if hint != "" {
-		lines = append(lines, "", m.Styles.Hint.Render(truncate(hint, width)))
-	}
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
 
@@ -182,8 +178,8 @@ func visibleCards(lines [][]string, sel, height int) []int {
 	return out
 }
 
-// splitPane renders a two-column screen: a title row, two bodies separated by a
-// rule, and a hint row.
+// splitPane renders a two-column screen: a subheader row, two bodies separated by a
+// rule, matching the full-height chat workspace layout.
 func (m *Model) splitPane(title, right string, left, rightBody []string, hint string) string {
 	width := m.contentWidth()
 	height := m.bodyHeight()
@@ -196,12 +192,24 @@ func (m *Model) splitPane(title, right string, left, rightBody []string, hint st
 		detailWidth = 20
 	}
 
-	left = clipLines(padLines(left, listWidth), height)
-	rightBody = clipLines(padLines(rightBody, detailWidth), height)
+	head := m.Styles.Bold.Render(title)
+	if right != "" {
+		gap := width - ansi.StringWidth(title) - ansi.StringWidth(right) - 2
+		if gap < 1 {
+			gap = 1
+		}
+		head += " " + m.Styles.Muted.Render(strings.Repeat("─", gap)) + " " + m.Styles.Muted.Render(right)
+	}
+
+	headerLines := []string{head}
+	rowsHeight := max(1, height-len(headerLines))
+
+	left = clipLines(padLines(left, listWidth), rowsHeight)
+	rightBody = clipLines(padLines(rightBody, detailWidth), rowsHeight)
 
 	rule := m.Styles.Muted.Render("│")
-	rows := make([]string, 0, height)
-	for i := 0; i < height; i++ {
+	rows := make([]string, 0, rowsHeight)
+	for i := 0; i < rowsHeight; i++ {
 		l, r := "", ""
 		if i < len(left) {
 			l = left[i]
@@ -212,21 +220,9 @@ func (m *Model) splitPane(title, right string, left, rightBody []string, hint st
 		rows = append(rows, padRight(l, listWidth)+" "+rule+" "+r)
 	}
 
-	head := m.Styles.Title.Render(title)
-	if right != "" {
-		gap := width - ansi.StringWidth(title) - ansi.StringWidth(right)
-		if gap < 1 {
-			gap = 1
-		}
-		head += strings.Repeat(" ", gap) + m.Styles.Muted.Render(right)
-	}
-
-	lines := make([]string, 0, height+4)
-	lines = append(lines, m.sectionHeader(), head, "")
+	lines := make([]string, 0, len(headerLines)+len(rows))
+	lines = append(lines, headerLines...)
 	lines = append(lines, rows...)
-	if hint != "" {
-		lines = append(lines, "", m.Styles.Hint.Render(truncate(hint, width)))
-	}
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
 

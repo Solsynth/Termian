@@ -76,6 +76,7 @@ func (m *Model) chatsView() string {
 	c := &m.Chats
 	height := m.bodyHeight()
 	leftWidth := m.listWidth()
+	rowsHeight := max(1, height-1)
 
 	var left []string
 	switch {
@@ -85,7 +86,7 @@ func (m *Model) chatsView() string {
 		left = append(left, m.Styles.Muted.Render("no chat rooms yet"))
 	default:
 		// Two lines per room: the header row and the preview row.
-		visible := max(height/2, 1)
+		visible := max(rowsHeight/2, 1)
 		start, end := scrollWindow(c.selected, c.selected-visible/2, len(c.rooms), visible)
 		for i := start; i < end; i++ {
 			left = append(left, m.renderRoomRow(c.rooms[i], leftWidth, i == c.selected)...)
@@ -100,7 +101,11 @@ func (m *Model) chatsView() string {
 	if total > 0 {
 		right += fmt.Sprintf(" · %d unread", total)
 	}
-	return m.splitPane("Chats", right, left, m.chatColumn(height), m.chatsHint())
+	title := "Chats"
+	if m.Chat.room.ID != "" {
+		title = "#" + m.Chats.title(m.Chat.room)
+	}
+	return m.splitPane(title, right, left, m.chatColumn(rowsHeight), m.chatsHint())
 }
 
 // listWidth is the width of the room column in the chat workspace.
@@ -118,26 +123,19 @@ func (m *Model) chatColumn(height int) []string {
 		return []string{
 			m.Styles.Muted.Render("select a room with enter"),
 			"",
-			m.Styles.Hint.Render("j/k move · enter open · tab sections"),
+			m.Styles.Hint.Render("j/k move · enter open"),
 		}
 	}
 
-	head := m.Styles.Bold.Render(c.room.Title())
-	if c.room.IsCommunity {
-		head += m.Styles.Muted.Render("  community")
-	}
-
-	// Reserve the composer and status rows, then hang the log above them.
-	chrome := 2 // header row and the blank line under it
 	composer := 0
 	if c.typing {
-		composer = 4
+		composer = 3
 	} else if c.lastErr != "" {
 		composer = 2
 	}
-	logHeight := max(height-chrome-composer, 3)
+	logHeight := max(height-composer, 3)
 
-	out := []string{head, ""}
+	var out []string
 	switch {
 	case !c.loaded:
 		out = append(out, m.Spinner.View()+" "+m.Styles.Muted.Render("loading messages…"))
@@ -153,7 +151,7 @@ func (m *Model) chatColumn(height int) []string {
 	}
 
 	if c.typing {
-		out = append(out, "", m.Styles.Label.Render("message"), c.input.View())
+		out = append(out, m.Styles.Label.Render("message"), c.input.View())
 		if c.sending {
 			out = append(out, m.Spinner.View()+" "+m.Styles.Muted.Render("sending…"))
 		}

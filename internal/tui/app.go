@@ -15,6 +15,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/colorprofile"
+	"github.com/charmbracelet/x/ansi"
 
 	"src.solsynth.dev/sosys/termian/internal/api"
 	"src.solsynth.dev/sosys/termian/internal/credentials"
@@ -33,6 +34,13 @@ const (
 	ScreenChats
 	ScreenChat
 	ScreenCompose
+	ScreenNotifications
+)
+
+// Router aliases
+const (
+	ScreenProfile Screen = ScreenHome
+	ScreenPosts   Screen = ScreenFeed
 )
 
 // String renders the screen name (used in tests and diagnostics).
@@ -54,9 +62,32 @@ func (s Screen) String() string {
 		return "chat"
 	case ScreenCompose:
 		return "compose"
+	case ScreenNotifications:
+		return "notifications"
 	default:
 		return "unknown"
 	}
+}
+
+// IncomingChatMsg is emitted when real-time chat messages arrive via background goroutines.
+type IncomingChatMsg struct {
+	RoomID  string
+	Sender  string
+	Content string
+}
+
+// SwitchScreenMsg requests the router to jump to another screen.
+type SwitchScreenMsg struct {
+	Target  Screen
+	Payload any
+}
+
+// RootModel is an alias for Model to match the sub-model router pattern.
+type RootModel = Model
+
+// NewRootModel constructs the router model.
+func NewRootModel(deps Deps) *Model {
+	return NewModel(deps)
 }
 
 // AuthAPI is the subset of the Stargate client the login panes depend on.
@@ -165,6 +196,11 @@ type Model struct {
 	// mu guards the mutable UI state so observers (tests, diagnostics) can take
 	// a consistent snapshot while the program goroutine updates it.
 	mu sync.Mutex
+
+	unreadChat    int
+	quickSwitch   bool
+	quickInput    string
+	quickSelected int
 }
 
 // Snapshot is a consistent view of the model's state.
@@ -304,52 +340,280 @@ func (m *Model) View() tea.View {
 	return v
 }
 
-// render draws the active screen, centered.
+// render draws the active screen framed by the global UI shell (or centered login card).
 func (m *Model) render() string {
 	if m.tooSmall() {
 		return lipgloss.Place(max(m.Width, 1), max(m.Height, 1), lipgloss.Center, lipgloss.Center,
 			m.Styles.Muted.Render("terminal too small"))
 	}
 
+	if m.Screen == ScreenLogin || m.Screen == ScreenPassword {
+		return m.renderLoginFlow()
+	}
+
+	header := m.renderHeader()
+	body := m.renderScreenBody()
+	framed := m.frameBody(body)
+	footer := m.renderFooter()
+
+	return lipgloss.JoinVertical(lipgloss.Left, header, framed, footer)
+}
+
+// renderLoginFlow renders the pre-session login cards centered on the terminal.
+func (m *Model) renderLoginFlow() string {
 	var body string
 	switch m.Screen {
 	case ScreenLogin:
 		body = m.loginView()
 	case ScreenPassword:
 		body = m.passwordView()
+	}
+
+	if m.Confirm.active {
+		body = lipgloss.JoinVertical(lipgloss.Center, body, "", m.confirmView())
+	} else if m.Banner != "" {
+		body = lipgloss.JoinVertical(lipgloss.Center, body, "", m.bannerView())
+	}
+
+	if !m.sized {
+		return body
+	}
+	return lipgloss.Place(m.Width, m.Height, lipgloss.Center, lipgloss.Center, body)
+}
+
+// renderScreenBody renders the active screen's body.
+func (m *Model) renderScreenBody() string {
+	if m.quickSwitch {
+		return m.quickSwitchView()
+	}
+
+	var body string
+	switch m.Screen {
 	case ScreenHome:
 		body = m.homeView()
 	case ScreenFeed:
 		body = m.feedView()
 	case ScreenPost:
 		body = m.postView()
-	case ScreenChats:
-		body = m.chatsView()
-	case ScreenChat:
+	case ScreenChats, ScreenChat:
 		body = m.chatsView()
 	case ScreenCompose:
 		body = m.composeView()
+	case ScreenNotifications:
+		body = m.notificationsView()
+	default:
+		body = m.Styles.Muted.Render("screen not found")
 	}
-	// The login cards are centered; the content panes start at the top left and
-	// keep the status line on the last row.
-	centered := m.Screen == ScreenLogin || m.Screen == ScreenPassword
+
 	if m.Confirm.active {
-		// The modal takes the status line: it owns the answer.
 		body = lipgloss.JoinVertical(lipgloss.Left, body, "", m.confirmView())
-	} else if m.Banner != "" {
-		if centered {
-			body = lipgloss.JoinVertical(lipgloss.Center, body, "", m.bannerView())
+	}
+	return body
+}
+
+// frameBody wraps the active screen content inside the persistent shell borders.
+func (m *Model) frameBody(body string) string {
+	borderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#555555"))
+	innerWidth := m.Width - 4
+	if innerWidth < 1 {
+		innerWidth = 1
+	}
+	bodyHeight := m.bodyHeight()
+
+	rawLines := strings.Split(body, "\n")
+	clipped := clipLines(rawLines, bodyHeight)
+
+	rows := make([]string, 0, bodyHeight)
+	for _, l := range clipped {
+		rows = append(rows, borderStyle.Render("│ ")+padRight(l, innerWidth)+borderStyle.Render(" │"))
+	}
+	for len(rows) < bodyHeight {
+		rows = append(rows, borderStyle.Render("│ ")+strings.Repeat(" ", innerWidth)+borderStyle.Render(" │"))
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+}
+
+// renderHeader draws the persistent global top navigation bar framed by box borders.
+func (m *Model) renderHeader() string {
+	width := m.Width
+	if width < MinWidth {
+		width = MinWidth
+	}
+
+	borderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#555555"))
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF"))
+
+	title := borderStyle.Render("┌─ ") + titleStyle.Render("Solian Terminal") + borderStyle.Render(" ─")
+
+	tabStyle := lipgloss.NewStyle().Padding(0, 1)
+	activeTabStyle := tabStyle.Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Background(lipgloss.Color("#7D56F4"))
+	inactiveTabStyle := tabStyle.Foreground(lipgloss.Color("#888888"))
+	unreadDot := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5F87")).Bold(true).Render("● ")
+
+	var tabs []string
+
+	// [1] Posts
+	postsActive := m.Screen == ScreenFeed || m.Screen == ScreenPost || m.Screen == ScreenCompose
+	if postsActive {
+		tabs = append(tabs, activeTabStyle.Render("[1] Posts"))
+	} else {
+		tabs = append(tabs, inactiveTabStyle.Render("[1] Posts"))
+	}
+
+	// [2] Chat
+	chatActive := m.Screen == ScreenChats || m.Screen == ScreenChat
+	unread := m.totalUnread()
+	chatLabel := "[2] Chat"
+	if unread > 0 {
+		chatLabel = fmt.Sprintf("[2] Chat (%d)", unread)
+	}
+	if chatActive {
+		tabs = append(tabs, activeTabStyle.Render(chatLabel))
+	} else {
+		if unread > 0 {
+			tabs = append(tabs, unreadDot+inactiveTabStyle.Render(chatLabel))
 		} else {
-			body = lipgloss.JoinVertical(lipgloss.Left, body, "", m.bannerView())
+			tabs = append(tabs, inactiveTabStyle.Render(chatLabel))
 		}
 	}
-	if !m.sized {
-		return body
+
+	// [3] Notifications
+	notifsActive := m.Screen == ScreenNotifications
+	notifLabel := "[3] Notifications"
+	if width < 85 {
+		notifLabel = "[3] Notifs"
 	}
-	if centered {
-		return lipgloss.Place(m.Width, m.Height, lipgloss.Center, lipgloss.Center, body)
+	if notifsActive {
+		tabs = append(tabs, activeTabStyle.Render(notifLabel))
+	} else {
+		tabs = append(tabs, inactiveTabStyle.Render(notifLabel))
 	}
-	return lipgloss.Place(m.Width, m.Height, lipgloss.Left, lipgloss.Top, body)
+
+	// [4] Profile
+	profileActive := m.Screen == ScreenHome
+	if profileActive {
+		tabs = append(tabs, activeTabStyle.Render("[4] Profile"))
+	} else {
+		tabs = append(tabs, inactiveTabStyle.Render("[4] Profile"))
+	}
+
+	tabsBar := strings.Join(tabs, " ")
+
+	titleWidth := ansi.StringWidth(title)
+	tabsWidth := ansi.StringWidth(tabsBar)
+
+	gap := width - titleWidth - tabsWidth - 2
+	if gap < 1 {
+		gap = 1
+	}
+
+	return title + borderStyle.Render(strings.Repeat("─", gap)) + tabsBar + borderStyle.Render("─┐")
+}
+
+// renderFooter draws the persistent global footer with user identity, keybinds and status.
+func (m *Model) renderFooter() string {
+	width := m.Width
+	if width < MinWidth {
+		width = MinWidth
+	}
+	borderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#555555"))
+	sepStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#555555"))
+	sep := sepStyle.Render(" │ ")
+
+	userHandle := "@guest"
+	if m.Home.account.Name != "" {
+		userHandle = "@" + m.Home.account.Name
+	} else if m.Home.identity.Name != "" {
+		userHandle = "@" + m.Home.identity.Name
+	}
+	deviceTag := "ed25519"
+	if m.Deps.DeviceID != "" {
+		deviceTag = m.Deps.DeviceID
+	}
+	userTag := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#AAAAAA")).Render(fmt.Sprintf("%s (%s)", userHandle, deviceTag))
+
+	var status string
+	if m.Banner != "" {
+		if m.BannerOK {
+			status = m.Styles.Notice.Render(m.Banner)
+		} else {
+			status = m.Styles.Error.Render(m.Banner)
+		}
+	}
+
+	var keybinds string
+	switch {
+	case m.Confirm.active:
+		keybinds = "[y] Confirm │ [n] Cancel"
+	case m.Compose.active:
+		keybinds = "[Ctrl+D] Publish │ [Esc] Cancel"
+	case (m.Screen == ScreenChats || m.Screen == ScreenChat) && m.Chat.typing:
+		keybinds = "[Enter] Send │ [Alt+Enter] Newline │ [Esc] Normal Mode"
+	case m.Screen == ScreenChats || m.Screen == ScreenChat:
+		if m.Chats.focused {
+			keybinds = "[1-4] Switch Screen │ [i] Focus Chat │ [Esc] Normal Mode │ [q] Quit"
+		} else {
+			keybinds = "[1-4] Switch Screen │ [Enter/i] Focus Chat │ [j/k] Drawer │ [q] Quit"
+		}
+	case m.Screen == ScreenFeed:
+		keybinds = "[1-4] Switch Screen │ [/] Search │ [c] New Post │ [q] Quit"
+	case m.Screen == ScreenPost:
+		keybinds = "[1-4] Switch Screen │ [j/k] Scroll │ [n] Reply │ [Esc] Feed │ [q] Quit"
+	case m.Screen == ScreenNotifications:
+		keybinds = "[1-4] Switch Screen │ [j/k] Scroll │ [q] Quit"
+	case m.Screen == ScreenHome:
+		keybinds = "[1-4] Switch Screen │ [r] Refresh │ [l] Logout │ [q] Quit"
+	default:
+		keybinds = "[1-4] Switch Screen │ [q] Quit"
+	}
+
+	keyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#888888"))
+	statusLine := userTag + sep + keyStyle.Render(keybinds)
+	if status != "" {
+		statusLine += sep + status
+	}
+
+	innerWidth := width - 4
+	if innerWidth < 1 {
+		innerWidth = 1
+	}
+
+	line1 := borderStyle.Render("├" + strings.Repeat("─", width-2) + "┤")
+	line2 := borderStyle.Render("│ ") + padRight(statusLine, innerWidth) + borderStyle.Render(" │")
+	line3 := borderStyle.Render("└" + strings.Repeat("─", width-2) + "┘")
+
+	return lipgloss.JoinVertical(lipgloss.Left, line1, line2, line3)
+}
+
+// isInputFocused queries active models to verify if text entry is active,
+// avoiding hijacking global keys like '1', '2', 'c', or 'q'.
+func (m *Model) isInputFocused() bool {
+	if m.quickSwitch {
+		return true
+	}
+	if m.Confirm.active {
+		return true
+	}
+	if m.Compose.active {
+		return true
+	}
+	if (m.Screen == ScreenChats || m.Screen == ScreenChat) && m.Chat.typing {
+		return true
+	}
+	if m.Screen == ScreenPassword {
+		return true
+	}
+	return false
+}
+
+// totalUnread computes all unread messages across rooms and background events.
+func (m *Model) totalUnread() int {
+	total := m.unreadChat
+	for _, s := range m.Chats.summary {
+		total += s.UnreadCount
+	}
+	return total
 }
 
 // bannerView renders the status line.
@@ -403,14 +667,65 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
+	case IncomingChatMsg:
+		// Forward background chat messages to chat model
+		if msg.RoomID == "" || (m.Chat.room.ID != "" && msg.RoomID == m.Chat.room.ID) {
+			newMsg := api.ChatMessage{
+				ID:        fmt.Sprintf("msg-in-%d", time.Now().UnixNano()),
+				RoomID:    m.Chat.room.ID,
+				Type:      "text",
+				Content:   &msg.Content,
+				Sender:    api.ChatMember{Account: &api.ChatUser{Name: msg.Sender, Nick: msg.Sender}},
+				CreatedAt: time.Now(),
+			}
+			m.Chat.messages = append(m.Chat.messages, newMsg)
+		}
+		if msg.RoomID != "" {
+			if summary, ok := m.Chats.summary[msg.RoomID]; ok {
+				summary.UnreadCount++
+				m.Chats.summary[msg.RoomID] = summary
+			}
+		}
+		if m.Screen != ScreenChats && m.Screen != ScreenChat {
+			m.unreadChat++
+		}
+		return m, nil
+
+	case SwitchScreenMsg:
+		m.showScreen(msg.Target)
+		if msg.Target == ScreenChats || msg.Target == ScreenChat {
+			m.unreadChat = 0
+			if roomID, ok := msg.Payload.(string); ok && roomID != "" {
+				for i, r := range m.Chats.rooms {
+					if r.ID == roomID {
+						m.Chats.selected = i
+						return m, m.openRoom()
+					}
+				}
+			}
+		} else if msg.Target == ScreenFeed || msg.Target == ScreenPost {
+			if postID, ok := msg.Payload.(string); ok && postID != "" {
+				m.postStack = []string{postID}
+				m.Post = newPostModel()
+				m.Post.post.ID = postID
+				m.Post.loaded = true
+				m.showScreen(ScreenPost)
+				return m, m.loadPostCmd(postID, true)
+			}
+		}
+		return m, nil
+
 	case tea.WindowSizeMsg:
 		m.Width, m.Height = msg.Width, msg.Height
 		m.sized = true
+		contentHeight := m.bodyHeight()
+		_ = contentHeight
+		contentWidth := m.contentWidth()
 		m.Login.setWidth(cardWidth(DeviceCardWidth, msg.Width))
 		m.Password.setWidth(cardWidth(PasswordCardWidth, msg.Width))
 		m.Home.setWidth(cardWidth(HomeCardWidth, msg.Width))
-		m.Chat.setWidth(m.contentWidth())
-		m.Compose.setWidth(m.contentWidth())
+		m.Chat.setWidth(contentWidth)
+		m.Compose.setWidth(contentWidth)
 		return m, nil
 
 	case tea.ColorProfileMsg:
@@ -444,9 +759,48 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // handleKey routes a key press to the active screen, or to the confirmation
 // modal when one is open.
 func (m *Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if m.quickSwitch {
+		return m.updateQuickSwitchKey(key)
+	}
 	if m.Confirm.active {
 		return m.updateConfirmKey(key)
 	}
+
+	// Global hotkey routing when not typing in an input buffer
+	if !m.isInputFocused() && m.Screen != ScreenLogin && m.Screen != ScreenPassword {
+		switch key.String() {
+		case "1":
+			m.showScreen(ScreenFeed)
+			if !m.Feed.loaded {
+				return m, m.loadFeedCmd(m.Feed.mode, 0)
+			}
+			return m, nil
+		case "2":
+			m.showScreen(ScreenChats)
+			m.unreadChat = 0
+			if !m.Chats.loaded {
+				return m, m.loadChatsCmd()
+			}
+			return m, nil
+		case "3":
+			m.showScreen(ScreenNotifications)
+			return m, nil
+		case "4":
+			m.showScreen(ScreenHome)
+			if m.Deps.Tokens != nil && !m.Home.loaded {
+				return m, m.fetchAccountCmd()
+			}
+			return m, nil
+		case "ctrl+k", "/":
+			m.quickSwitch = true
+			m.quickInput = ""
+			m.quickSelected = 0
+			return m, nil
+		case "q":
+			return m, tea.Quit
+		}
+	}
+
 	// Tab switches sections from every content pane.
 	switch m.Screen {
 	case ScreenFeed, ScreenPost, ScreenChats, ScreenChat:
@@ -469,6 +823,8 @@ func (m *Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.updateChatKey(key)
 	case ScreenCompose:
 		return m.updateComposeKey(key)
+	case ScreenNotifications:
+		return m.updateNotificationsKey(key)
 	}
 	return m, nil
 }

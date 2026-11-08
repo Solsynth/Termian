@@ -62,23 +62,37 @@ func (m *Model) sectionHeader() string {
 	return strip
 }
 
-// switchSection moves to a section, loading it when it has no data yet.
+// switchSection moves to a section, retaining state if already loaded.
 func (m *Model) switchSection(target section) tea.Cmd {
 	switch target {
 	case sectionTimeline:
 		if m.guest || m.Deps.Tokens != nil {
-			m.Feed.reset(feedTimeline)
+			if m.Feed.mode != feedTimeline {
+				m.Feed.reset(feedTimeline)
+				m.showScreen(ScreenFeed)
+				return m.loadFeedCmd(feedTimeline, 0)
+			}
 			m.showScreen(ScreenFeed)
-			return m.loadFeedCmd(feedTimeline, 0)
+			if !m.Feed.loaded {
+				return m.loadFeedCmd(feedTimeline, 0)
+			}
+			return nil
 		}
 		return nil
 	case sectionBookmarks:
 		if err := m.sessionGuard("bookmarks need a session — press g to sign in"); err != nil {
 			return nil
 		}
-		m.Feed.reset(feedBookmarks)
+		if m.Feed.mode != feedBookmarks {
+			m.Feed.reset(feedBookmarks)
+			m.showScreen(ScreenFeed)
+			return m.loadFeedCmd(feedBookmarks, 0)
+		}
 		m.showScreen(ScreenFeed)
-		return m.loadFeedCmd(feedBookmarks, 0)
+		if !m.Feed.loaded {
+			return m.loadFeedCmd(feedBookmarks, 0)
+		}
+		return nil
 	case sectionChats:
 		if err := m.sessionGuard("chats need a session — press g to sign in"); err != nil {
 			return nil
