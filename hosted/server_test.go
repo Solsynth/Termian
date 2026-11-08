@@ -32,6 +32,23 @@ type fakeExchange struct {
 	accountID string
 }
 
+func (f *fakeExchange) ValidateSSHPublicKey(_ context.Context, req *gen.DyValidateSSHPublicKeyRequest) (*gen.DyValidateSSHPublicKeyResponse, error) {
+	if req.GetPublicKey() != f.publicKey {
+		return &gen.DyValidateSSHPublicKeyResponse{
+			Fingerprint: req.GetFingerprint(),
+			Reason:      "KEY_NOT_FOUND",
+		}, nil
+	}
+	return &gen.DyValidateSSHPublicKeyResponse{
+		Valid:       true,
+		AccountId:   f.accountID,
+		KeyId:       "key-id",
+		KeyLabel:    "laptop",
+		Fingerprint: req.GetFingerprint(),
+		Purpose:     req.GetPurpose(),
+	}, nil
+}
+
 func (f *fakeExchange) ExchangeSSHPublicKeyForSession(_ context.Context, req *gen.DyExchangeSSHPublicKeyForSessionRequest) (*gen.DyExchangeSSHPublicKeyForSessionResponse, error) {
 	if req.GetServiceToken() != "exchange-secret" {
 		return nil, status.Error(codes.PermissionDenied, "bad service token")

@@ -185,10 +185,42 @@ type gateway struct {
 	log      *slog.Logger
 }
 
-// authenticate resolves the offered key to a Solian account and mints the
-// session tokens stored on the SSH context. The key itself is public material;
-// the SSH handshake proves possession before this callback runs.
+// authenticate checks that the offered key belongs to a Solian account. It
+// deliberately mints nothing: the SSH protocol calls this handler for unsigned
+// public-key queries too, so exchanging here would create sessions before the
+// client has proved possession of the key. The session is exchanged in
+// program, using the key the handshake actually authenticated.
 func (g *gateway) authenticate(ctx ssh.Context, key ssh.PublicKey) bool {
+	ctxTimeout, cancel := context.WithTimeout(ctx, exchangeTimeout)
+	defer cancel()
+
+	pub := strings.TrimSpace(string(gossh.MarshalAuthorizedKey(key)))
+	response, err := g.exchange.ValidateSSHPublicKey(ctxTimeout, &gen.DyValidateSSHPublicKeyRequest{
+		PublicKey:   pub,
+		Fingerprint: gossh.FingerprintSHA256(key),
+		Purpose:     g.cfg.Purpose,
+	})
+	if err != nil {
+		g.log.Warn("SSH key validation failed", "remote", ctx.RemoteAddr(), "error", err)
+		return false
+	}
+	if !response.GetValid() {
+		g.log.Info("SSH key rejected",
+			"remote", ctx.RemoteAddr(),
+			"fingerprint", response.GetFingerprint(),
+			"reason", response.GetReason())
+		return false
+	}
+	g.log.Info("hosted SSH key accepted",
+		"account_id", response.GetAccountId(),
+		"key_id", response.GetKeyId(),
+		"remote", ctx.RemoteAddr())
+	return true
+}
+
+// exchangeSession turns the authenticated key into tokens. It runs only after
+// the SSH handshake has verified the signature for this key.
+func (g *gateway) exchangeSession(ctx ssh.Context, key ssh.PublicKey) (*sessionInfo, error) {
 	ctxTimeout, cancel := context.WithTimeout(ctx, exchangeTimeout)
 	defer cancel()
 
@@ -201,28 +233,30 @@ func (g *gateway) authenticate(ctx ssh.Context, key ssh.PublicKey) bool {
 		DeviceName:   "Hosted Termian",
 		UserAgent:    "Termian/" + g.cfg.Version + " ssh/" + ctx.ClientVersion(),
 	}
-	if host, _, err := net.SplitHostPort(ctx.RemoteAddr().String()); err == nil {
-		request.IpAddress = host
+	if remote := ctx.RemoteAddr(); remote != nil {
+		if host, _, err := net.SplitHostPort(remote.String()); err == nil {
+			request.IpAddress = host
+		}
 	}
 
 	response, err := g.exchange.ExchangeSSHPublicKeyForSession(ctxTimeout, request)
 	if err != nil {
 		g.log.Warn("SSH key exchange failed", "remote", ctx.RemoteAddr(), "error", err)
-		return false
+		return nil, err
 	}
 	if !response.GetValid() {
-		g.log.Info("SSH key rejected",
+		g.log.Info("SSH key exchange rejected",
 			"remote", ctx.RemoteAddr(),
 			"fingerprint", response.GetFingerprint(),
 			"reason", response.GetReason())
-		return false
+		return nil, fmt.Errorf("key rejected: %s", response.GetReason())
 	}
 	if response.GetAccessToken() == "" || response.GetRefreshToken() == "" {
 		g.log.Warn("SSH key exchange returned no tokens", "account_id", response.GetAccountId())
-		return false
+		return nil, errors.New("key exchange returned no tokens")
 	}
 
-	ctx.SetValue(sessionContextKey{}, &sessionInfo{
+	return &sessionInfo{
 		AccountID:        response.GetAccountId(),
 		KeyID:            response.GetKeyId(),
 		KeyLabel:         response.GetKeyLabel(),
@@ -231,19 +265,19 @@ func (g *gateway) authenticate(ctx ssh.Context, key ssh.PublicKey) bool {
 		RefreshToken:     response.GetRefreshToken(),
 		ExpiresIn:        response.GetExpiresIn(),
 		RefreshExpiresIn: response.GetRefreshExpiresIn(),
-	})
-	g.log.Info("hosted session authenticated",
-		"account_id", response.GetAccountId(),
-		"key_id", response.GetKeyId(),
-		"remote", ctx.RemoteAddr())
-	return true
+	}, nil
 }
 
 // program builds the Bubble Tea model for one authenticated session.
 func (g *gateway) program(sess ssh.Session) (tea.Model, []tea.ProgramOption) {
-	pending, ok := sess.Context().Value(sessionContextKey{}).(*sessionInfo)
-	if !ok || pending == nil {
-		wish.Fatalln(sess, "authentication context is missing")
+	key := sess.PublicKey()
+	if key == nil {
+		wish.Fatalln(sess, "authentication did not use a public key")
+		return nil, nil
+	}
+	pending, err := g.exchangeSession(sess.Context(), key)
+	if err != nil {
+		wish.Fatalf(sess, "authentication failed: %v\r\n", err)
 		return nil, nil
 	}
 
