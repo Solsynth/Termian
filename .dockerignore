@@ -1,0 +1,7 @@
+.git
+bin
+dist
+*.test
+coverage.out
+hosted/go.work
+hosted/go.work.sum

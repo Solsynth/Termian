@@ -109,7 +109,7 @@ func (t *TokenSource) refreshLocked(ctx context.Context) error {
 	hasRefreshLife := false
 
 	switch creds.Method {
-	case credentials.MethodChallenge:
+	case credentials.MethodChallenge, credentials.MethodSSH:
 		pair, err := t.client.RefreshChallenge(ctx, creds.RefreshToken)
 		if err != nil {
 			return t.handleRefreshError(err)

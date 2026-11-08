@@ -20,7 +20,14 @@ Or build from a checkout (Go 1.26+):
 
 ```sh
 go build -o termian .
+
+# hosted server (separate module; Go 1.26.8+ and shared v0.2.6)
+go build -o termian-server ./hosted/cmd/termian-server
 ```
+
+The client binary is self-contained. The hosted server lives in `hosted/`, has
+its own `go.mod`, and is the only part that uses Wish and Stargate's generated
+gRPC client, so `go install` and client builds never pull those dependencies.
 
 ## Quick start
 
@@ -165,7 +172,9 @@ A missing config file is fine; a malformed one is a hard error naming the path.
   `$XDG_STATE_HOME/termian/credentials-<hash>.json`, written atomically with mode
   `0600` inside a `0700` directory, and prints a one-line notice (text mode only).
   `--store keyring` refuses to fall back; `--store file` skips the keyring.
-- Access tokens are never persisted.
+- Access tokens are never persisted. Hosted sessions keep both tokens in
+  per-connection process memory (`credentials.NewMemory`) and write nothing to
+  disk or a shared keyring.
 - The device identity is a SHA-256 of `/etc/machine-id` when present, otherwise a
   random id persisted at `$XDG_STATE_HOME/termian/device-id` (`0600`). A stable
   identity matters: Stargate keys challenge reuse and risky-IP accounting on it.
@@ -178,6 +187,88 @@ register your own. The requested scope defaults to `*` and is configurable throu
 `scope` in `config.toml`, because `openid`, `profile` and `email` are rejected as
 `invalid_scope` for that client.
 
+## Hosted mode
+
+`termian-server` runs the same TUI as an SSH application, one Bubble Tea program
+per connection. A user connects with any SSH client; the server validates the
+offered key against Stargate and exchanges it for a Solian session, so there is
+no device code or password step.
+
+```sh
+go build -o termian-server ./hosted/cmd/termian-server
+./termian-server \
+  --listen :2222 \
+  --stargate-grpc 127.0.0.1:9090 \
+  --exchange-token "$TERMIAN_EXCHANGE_TOKEN"
+```
+
+The server is a separate module. It builds in this checkout through
+`hosted/go.work`, which points at `../LightHouse/shared`; container and CI
+builds use `GOWORK=off` and fetch the published `shared/v0.2.6` module.
+
+Stargate must enable the exchange with the same secret:
+
+```toml
+[hosted]
+exchangeToken = "…"
+```
+
+The user's public key must be registered on their Solian account through
+`POST /api/keys/ssh` (Settings → SSH keys in the console). Keys are public
+material, so the exchange RPC is closed unless the deployment configured a
+token; the SSH handshake is what proves possession.
+
+Flow:
+
+1. The SSH server asks Stargate's `DyAccountKeyService` to
+   `ExchangeSSHPublicKeyForSession` with the offered key, the service token and
+   a purpose (default `termian-hosted`).
+2. Stargate resolves the key to its account, refuses locked accounts, creates
+   an OIDC session and returns access and refresh tokens.
+3. The TUI starts on the session shell with those tokens; the refresh token
+   stays in per-session memory and rotates through `/auth/token` like a
+   challenge login.
+
+Hosted flags:
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--listen` | `:2222` | SSH listen address |
+| `--stargate-grpc` | `127.0.0.1:9090` | Stargate's internal gRPC address |
+| `--stargate-grpc-tls` | off | TLS to Stargate; fleet certificates are self-signed and not verified |
+| `--exchange-token` | `$TERMIAN_EXCHANGE_TOKEN` | Hosted exchange secret; required |
+| `--purpose` | `termian-hosted` | Purpose echoed in Stargate's audit log |
+| `--host-key` | `$XDG_STATE_HOME/termian/host_ed25519` | SSH host key; generated when missing |
+
+`--server`, `--client-id`, `--attachments`, `--chat-history` and `--timeout`
+apply to hosted sessions too. The attachment policy defaults to `preview`
+because the server has no display for `browser`.
+
+### Containers
+
+`Dockerfile` defines two targets:
+
+| Target | Binary | Use |
+|---|---|---|
+| `server` (default) | `termian-server` | Hosted fleet image; exposes `2222` |
+| `client` | `termian` | Client-only TUI image, no SSH server |
+
+```sh
+docker build --target server -t termian-server .
+docker build --target client -t termian-client .
+
+docker run --rm -p 2222:2222 \
+  -e TERMIAN_EXCHANGE_TOKEN \
+  -v termian-host-key:/data \
+  termian-server --stargate-grpc stargate:9090 --stargate-grpc-tls
+
+docker run --rm -it -v termian-client-state:/data termian-client
+```
+
+Both runtime images are `scratch` with CA certificates and `XDG_STATE_HOME=/data`
+so credential and host-key files survive through the volume. The server image
+needs `shared/v0.2.6` published before it can compile; the client image does not.
+
 ## Architecture
 
 ```
@@ -186,11 +277,12 @@ internal/api                Stargate client: device flow, challenge flow, sessio
 internal/api/content.go     sphere client: timeline, posts, edits, replies, reactions, bookmarks
 internal/api/chat.go        messager client: rooms, messages, edits, reactions
 internal/api/tokensource.go access-token rotation, single-flight, session expiry
-internal/credentials        keyring store with 0600 file fallback
+internal/credentials        keyring store with 0600 file fallback and a per-session memory store
 internal/deviceid           stable device identity
 internal/config             config file + env + flags
 internal/ui                 text/NDJSON renderer and exit codes
 internal/cli                cobra commands and the headless flows
+hosted/                     separate module: wish SSH server and command
 internal/tui                Bubble Tea app: login, session shell, feed, post, chats
 internal/tui/attach.go      attachment listing, browser hand-off and image previews
 ```
@@ -251,6 +343,7 @@ so the offset tracks rows read from the server rather than visible messages.
 
 ```sh
 go build ./... && go vet ./... && go test ./...
+cd hosted && go build ./... && go vet ./... && go test ./...
 ```
 
 The test suite is offline: HTTP is served by `httptest`, the keyring by

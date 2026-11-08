@@ -158,6 +158,7 @@ func (a *app) rootCommand() *cobra.Command {
 		a.chatsCommand(),
 		a.chatCommand(),
 	)
+
 	return root
 }
 

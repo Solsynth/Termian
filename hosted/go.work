@@ -1,0 +1,8 @@
+go 1.26.8
+
+// Hosted builds need Stargate's generated gRPC surface. During development the
+// workspace resolves it from the sibling LightHouse checkout; container builds
+// use GOWORK=off and fetch the published shared v0.2.6 module instead.
+use .
+
+replace src.solsynth.dev/sosys/lighthouse/shared => ../../LightHouse/shared

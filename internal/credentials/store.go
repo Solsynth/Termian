@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/adrg/xdg"
@@ -23,6 +24,9 @@ import (
 const (
 	MethodDevice    = "device"
 	MethodChallenge = "challenge"
+	// MethodSSH marks a hosted session minted from an SSH key. It refreshes
+	// through the same /auth/token grant as a challenge login.
+	MethodSSH = "ssh"
 )
 
 // Backend names the storage medium backing a Store.
@@ -31,6 +35,10 @@ type Backend string
 const (
 	BackendKeyring Backend = "keyring"
 	BackendFile    Backend = "file"
+	// BackendMemory keeps the record in this Store's process memory. The
+	// hosted server uses one per SSH session so tokens never touch shared
+	// disk or a machine-wide keyring.
+	BackendMemory Backend = "memory"
 )
 
 // Store modes accepted by Open.
@@ -47,7 +55,7 @@ const keyringService = "termian"
 type Credentials struct {
 	// Server is the normalized API base, e.g. https://api.solian.app/stargate.
 	Server string `json:"server"`
-	// Method is "device" or "challenge".
+	// Method is "device", "challenge" or "ssh".
 	Method string `json:"method"`
 	// ClientID is the OAuth client used by the device flow; empty otherwise.
 	ClientID string `json:"client_id,omitempty"`
@@ -76,6 +84,16 @@ type Store struct {
 	// it into a user-facing line.
 	noticeErr error
 	stateDir  string
+
+	mu  sync.RWMutex
+	mem map[string]Credentials
+}
+
+// NewMemory returns a Store backed by this process's heap. Each hosted SSH
+// session gets its own instance, so one account's refresh token is never
+// visible to another.
+func NewMemory() *Store {
+	return &Store{Backend: BackendMemory, mem: make(map[string]Credentials)}
 }
 
 // Open resolves a store for the requested mode.
@@ -173,6 +191,14 @@ func (s *Store) Load(server string) (*Credentials, error) {
 	var blob []byte
 	var err error
 	switch s.Backend {
+	case BackendMemory:
+		s.mu.RLock()
+		creds, ok := s.mem[server]
+		s.mu.RUnlock()
+		if !ok {
+			return nil, nil
+		}
+		return &creds, nil
 	case BackendKeyring:
 		var secret string
 		secret, err = keyring.Get(keyringService, key(server))
@@ -215,6 +241,11 @@ func (s *Store) Save(c *Credentials) error {
 		return fmt.Errorf("encode credentials: %w", err)
 	}
 	switch s.Backend {
+	case BackendMemory:
+		s.mu.Lock()
+		s.mem[c.Server] = *c
+		s.mu.Unlock()
+		return nil
 	case BackendKeyring:
 		if err := keyring.Set(keyringService, key(c.Server), string(blob)); err != nil {
 			return fmt.Errorf("write keyring: %w", err)
@@ -230,6 +261,11 @@ func (s *Store) Save(c *Credentials) error {
 // Delete removes the record for server; a missing record is not an error.
 func (s *Store) Delete(server string) error {
 	switch s.Backend {
+	case BackendMemory:
+		s.mu.Lock()
+		delete(s.mem, server)
+		s.mu.Unlock()
+		return nil
 	case BackendKeyring:
 		err := keyring.Delete(keyringService, key(server))
 		if err == nil || errors.Is(err, keyring.ErrNotFound) {
@@ -292,8 +328,11 @@ func (s *Store) writeFile(path string, data []byte) error {
 
 // Describe renders the storage location for humans, never the secrets.
 func (s *Store) Describe(server string) string {
-	if s.Backend == BackendFile {
+	switch s.Backend {
+	case BackendFile:
 		return s.filePath(server)
+	case BackendMemory:
+		return "session memory"
 	}
 	return "system keyring (" + keyringService + ")"
 }
