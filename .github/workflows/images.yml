@@ -1,0 +1,125 @@
+name: Termian images
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "**/*.go"
+      - "go.mod"
+      - "go.sum"
+      - "hosted/**"
+      - "Dockerfile"
+      - ".dockerignore"
+      - ".github/workflows/images.yml"
+  pull_request:
+    branches: [master]
+    paths:
+      - "**/*.go"
+      - "go.mod"
+      - "go.sum"
+      - "hosted/**"
+      - "Dockerfile"
+      - ".dockerignore"
+      - ".github/workflows/images.yml"
+  workflow_dispatch:
+    inputs:
+      push:
+        description: Push the built images to ghcr.io (off = build only)
+        type: boolean
+        default: true
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.x"
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            hosted/go.sum
+
+      # Client mode is self-contained: no Wish, gRPC or lighthouse/shared.
+      - name: Vet client
+        run: go vet ./...
+
+      - name: Test client
+        run: go test ./...
+
+      # The hosted module is built outside the workspace, exactly like the
+      # image: it fetches the published shared/v0.2.6 module.
+      - name: Vet hosted
+        run: GOWORK=off go vet ./...
+        working-directory: hosted
+
+      - name: Test hosted
+        run: GOWORK=off go test ./...
+        working-directory: hosted
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: termian
+            target: client
+            scope: client
+          - image: termian-server
+            target: server
+            scope: server
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the Container registry
+        if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.push)
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # A dispatch from a branch may carry unreleased code, so `latest` only
+      # moves from master; every build is addressable by commit SHA.
+      - name: Compute tags
+        id: tags
+        run: |
+          image="${{ env.REGISTRY }}/${{ vars.PACKAGE_OWNER }}/${{ matrix.image }}"
+          {
+            echo "tags<<EOF"
+            echo "${image}:${{ github.sha }}"
+            if [ "${{ github.ref }}" = "refs/heads/master" ]; then
+              echo "${image}:latest"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          target: ${{ matrix.target }}
+          push: ${{ github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.push) }}
+          cache-from: type=gha,scope=termian-${{ matrix.scope }}
+          cache-to: type=gha,mode=max,scope=termian-${{ matrix.scope }}
+          build-args: |
+            VERSION=${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
+          tags: ${{ steps.tags.outputs.tags }}
