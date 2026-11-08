@@ -11,8 +11,9 @@ const (
 	DeviceCardWidth = 56
 	// PasswordCardWidth frames the password-flow card.
 	PasswordCardWidth = 52
-	// HomeCardWidth frames the session shell cards.
-	HomeCardWidth = 64
+	// DefaultInputWidth seeds the chat and compose editors before the first
+	// window size arrives.
+	DefaultInputWidth = 64
 	// MinWidth and MinHeight below which the TUI refuses to render a layout.
 	MinWidth  = 44
 	MinHeight = 14

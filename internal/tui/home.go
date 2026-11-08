@@ -7,7 +7,6 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 
 	"src.solsynth.dev/sosys/termian/internal/api"
 	"src.solsynth.dev/sosys/termian/internal/credentials"
@@ -15,8 +14,6 @@ import (
 
 // homeModel is the post-login session shell.
 type homeModel struct {
-	width int
-
 	identity api.Identity
 	account  api.Account
 	loaded   bool
@@ -30,11 +27,8 @@ type homeModel struct {
 
 // newHomeModel builds the idle session shell.
 func newHomeModel() homeModel {
-	return homeModel{width: HomeCardWidth}
+	return homeModel{}
 }
-
-// setWidth records the card width.
-func (h *homeModel) setWidth(w int) { h.width = w }
 
 // displayName prefers the nickname, then the account name.
 func (h *homeModel) displayName() string {
@@ -58,44 +52,22 @@ func (h *homeModel) handleName() string {
 	return h.identity.Name
 }
 
-// accountID is the canonical account identifier.
-func (h *homeModel) accountID() string {
-	if h.account.ID != "" {
-		return h.account.ID
-	}
-	return h.identity.ID
-}
-
-// homeView renders the account and session cards.
+// homeView renders the signed-in profile with the session details.
 func (m *Model) homeView() string {
 	h := &m.Home
-	var lines []string
-
-	lines = append(lines, m.Styles.Title.Render("Termian"))
-	lines = append(lines, m.Styles.Subtitle.Render("Signed in to Solian"))
-	lines = append(lines, "")
-
+	right := ""
+	var body []string
 	if !h.loaded {
-		lines = append(lines, m.Spinner.View()+" "+m.Styles.Muted.Render("loading account…"))
+		body = append(body, m.Spinner.View()+" "+m.Styles.Muted.Render("loading account…"))
 	} else {
-		lines = append(lines, m.Styles.Bold.Render(h.displayName()))
-		lines = append(lines, m.Styles.Muted.Render("@"+h.handleName()))
-		lines = append(lines, m.Styles.Muted.Render(h.accountID()))
-		lines = append(lines, m.Styles.Foreground.Render(h.profileLine()))
-		lines = append(lines, "")
-		lines = append(lines, m.Styles.Label.Render("browse"))
-		lines = append(lines, m.Styles.Foreground.Render("f  timeline"))
-		lines = append(lines, m.Styles.Foreground.Render("b  bookmarks"))
-		lines = append(lines, m.Styles.Foreground.Render("c  chats"))
-		lines = append(lines, m.Styles.Foreground.Render("n  new post"))
-		lines = append(lines, "")
-		lines = append(lines, m.sessionLines()...)
+		right = "@" + h.handleName()
+		body = append(body, m.Styles.Bold.Render(h.displayName()))
+		body = append(body, m.Styles.Foreground.Render(h.profileLine()))
+		body = append(body, "")
+		body = append(body, m.sessionLines()...)
+		body = append(body, "", m.Styles.Hint.Render("f feed · b bookmarks · c chats · n new post"))
 	}
-
-	lines = append(lines, "")
-	lines = append(lines, m.Styles.Hint.Render("f feed · b bookmarks · c chats · n post · r refresh · l logout · q quit"))
-
-	return m.Styles.Card.Width(h.width).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+	return m.pane("Profile", right, body)
 }
 
 // profileLine renders level, experience and join date.

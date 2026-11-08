@@ -48,7 +48,7 @@ func (m *Model) applyPostDeleted(msg postDeletedMsg) {
 			kept = append(kept, post)
 		}
 	}
-	if len(kept) != len(m.Feed.items) {
+	if m.Feed.mode == feedBookmarks && len(kept) != len(m.Feed.items) {
 		m.Feed.total = max(m.Feed.total-1, len(kept))
 	}
 	m.Feed.items = kept

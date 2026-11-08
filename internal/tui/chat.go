@@ -25,11 +25,13 @@ type chatModel struct {
 	// flight; exhausted is set when the server has nothing older left.
 	fetching  bool
 	exhausted bool
-	// fetched counts the rows read from the server so far, event rows
-	// included: it is the offset of the next history page.
-	fetched int
+	fetched   int
 	// historyLimit caps the retained messages; zero uses the default.
 	historyLimit int
+	// members is the room's nicklist, including the signed-in account; the
+	// view filters self out.
+	members       []api.ChatMember
+	membersLoaded bool
 
 	input    textarea.Model
 	typing   bool
@@ -42,10 +44,10 @@ func newChatModel() chatModel {
 	ta := textarea.New()
 	ta.Placeholder = "write a message…"
 	ta.ShowLineNumbers = false
-	ta.Prompt = ""
+	ta.Prompt = "> "
 	ta.CharLimit = 4000
-	ta.SetHeight(3)
-	ta.SetWidth(HomeCardWidth)
+	ta.SetHeight(1)
+	ta.SetWidth(DefaultInputWidth)
 	// Enter sends; a newline needs alt+enter.
 	ta.KeyMap.InsertNewline.SetKeys("alt+enter", "ctrl+j")
 	return chatModel{input: ta}
@@ -69,6 +71,13 @@ type sentMessageMsg struct {
 	roomID string
 	msg    api.ChatMessage
 	err    error
+}
+
+// membersLoadedMsg carries a room's nicklist.
+type membersLoadedMsg struct {
+	roomID  string
+	members []api.ChatMember
+	err     error
 }
 
 // chatPageSize is how many messages one history page holds.
@@ -96,6 +105,18 @@ func (m *Model) loadOlderMessagesCmd(roomID string) tea.Cmd {
 		}
 		page, err := m.Deps.Content.ChatMessages(ctx, roomID, first, chatPageSize)
 		return messagesLoadedMsg{roomID: roomID, page: page, first: first, older: true, err: err}
+	})
+}
+
+// loadMembersCmd fetches the nicklist of a room. The view filters the
+// signed-in account out of it.
+func (m *Model) loadMembersCmd(roomID string) tea.Cmd {
+	return m.withTimeout(func(ctx context.Context) tea.Msg {
+		if err := m.requireSession(ctx); err != nil {
+			return membersLoadedMsg{roomID: roomID, err: err}
+		}
+		page, err := m.Deps.Content.ChatMembers(ctx, roomID, 0, 100)
+		return membersLoadedMsg{roomID: roomID, members: page.Items, err: err}
 	})
 }
 
@@ -132,24 +153,24 @@ func (m *Model) renderLog(width, height int) []string {
 	return out
 }
 
-// renderMessage renders one message as one or more lines.
+// renderMessage renders one IRC-style line: timestamp, nick and text. Wrapped
+// text and attachments align under the message body.
 func (m *Model) renderMessage(msg api.ChatMessage, width int, selected bool) []string {
-	who := msg.Sender.DisplayName()
-	when := shortTime(msg.CreatedAt)
-	marker := ""
+	gutter := "  "
 	if selected {
-		marker = m.Styles.Accent.Render("▸ ")
-	}
-	head := marker + m.Styles.Bold.Render(who)
-	if when != "" {
-		gap := width - ansi.StringWidth(marker) - ansi.StringWidth(who) - ansi.StringWidth(when)
-		if gap < 1 {
-			gap = 1
-		}
-		head += strings.Repeat(" ", gap) + m.Styles.Muted.Render(when)
+		gutter = m.Styles.Accent.Render("▸ ")
 	}
 
-	out := []string{head}
+	when := shortTime(msg.CreatedAt)
+	nick := msg.Sender.DisplayName()
+	plainPrefix := "<" + nick + ">"
+	prefix := m.Styles.Bold.Render(plainPrefix)
+	prefixWidth := ansi.StringWidth(plainPrefix)
+	if when != "" {
+		prefix = m.Styles.Muted.Render(when) + " " + prefix
+		prefixWidth += ansi.StringWidth(when) + 1
+	}
+
 	text := msg.Text()
 	if msg.DeletedAt != nil {
 		text = "(deleted)"
@@ -157,25 +178,23 @@ func (m *Model) renderMessage(msg api.ChatMessage, width int, selected bool) []s
 	if text == "" && len(msg.Attachments) > 0 {
 		text = "(" + plural(len(msg.Attachments), "attachment", "attachments") + ")"
 	}
-	for _, line := range wrapText(text, width-2) {
-		out = append(out, "  "+line)
+
+	lines := wrapText(text, max(width-2-prefixWidth-1, 10))
+	out := []string{gutter + prefix}
+	if len(lines) > 0 {
+		out[0] += " " + lines[0]
+	}
+	indent := "  " + strings.Repeat(" ", prefixWidth+1)
+	for _, line := range lines[1:] {
+		out = append(out, indent+line)
 	}
 	for i, file := range msg.Attachments {
-		out = append(out, "  "+m.Styles.Muted.Render(attachmentLine(file, i+1)))
+		out = append(out, indent+m.Styles.Muted.Render(attachmentLine(file, i+1)))
 	}
 	if reactions := reactionSummary(msg.Reactions); reactions != "" {
-		out = append(out, "  "+m.Styles.Muted.Render(reactions))
+		out = append(out, indent+m.Styles.Muted.Render(reactions))
 	}
-	out = append(out, "")
 	return out
-}
-
-// chatHint is the key legend of the room pane.
-func (m *Model) chatHint() string {
-	if m.Chat.typing {
-		return "enter send · alt+enter newline · esc cancel · ctrl+c quit"
-	}
-	return "j/k move · k history · g/G ends · r react · i write · o open file · h rooms · R reload"
 }
 
 // updateChatKey handles keys on the chat workspace. The room column holds the
@@ -276,7 +295,7 @@ func (m *Model) updateChatKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if c.room.ID == "" {
 			return m, nil
 		}
-		return m, m.loadMessagesCmd(c.room.ID)
+		return m, tea.Batch(m.loadMessagesCmd(c.room.ID), m.loadMembersCmd(c.room.ID))
 	case "o":
 		if c.selected < 0 || c.selected >= len(c.messages) {
 			return m, nil
@@ -366,6 +385,18 @@ func (m *Model) updateChatMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		c.trimHistory()
 		m.clearBanner()
+		return m, nil
+
+	case membersLoadedMsg:
+		if msg.roomID != c.room.ID {
+			return m, nil
+		}
+		c.membersLoaded = true
+		if msg.err != nil {
+			c.members = nil
+			return m, nil
+		}
+		c.members = msg.members
 		return m, nil
 
 	case sentMessageMsg:

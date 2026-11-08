@@ -69,14 +69,13 @@ func (m *Model) loadChatsCmd() tea.Cmd {
 	})
 }
 
-// chatsView renders the two-column chat workspace: rooms on the left, the
-// selected conversation on the right. Opening a room keeps the list visible,
-// which is how the Solian app lays chat out.
+// chatsView renders the IRC-style workspace: rooms on the left, the
+// transcript in the middle, and the room's members on the right. The member
+// column only appears when the terminal is wide enough for three readable
+// columns.
 func (m *Model) chatsView() string {
 	c := &m.Chats
-	height := m.bodyHeight()
-	leftWidth := m.listWidth()
-	rowsHeight := max(1, height-1)
+	rowsHeight := max(1, m.bodyHeight()-1)
 
 	var left []string
 	switch {
@@ -85,11 +84,10 @@ func (m *Model) chatsView() string {
 	case len(c.rooms) == 0:
 		left = append(left, m.Styles.Muted.Render("no chat rooms yet"))
 	default:
-		// Two lines per room: the header row and the preview row.
-		visible := max(rowsHeight/2, 1)
+		visible := max(rowsHeight, 1)
 		start, end := scrollWindow(c.selected, c.selected-visible/2, len(c.rooms), visible)
 		for i := start; i < end; i++ {
-			left = append(left, m.renderRoomRow(c.rooms[i], leftWidth, i == c.selected)...)
+			left = append(left, m.renderRoomRow(c.rooms[i], m.listWidth(), i == c.selected)...)
 		}
 	}
 
@@ -103,20 +101,42 @@ func (m *Model) chatsView() string {
 	}
 	title := "Chats"
 	if m.Chat.room.ID != "" {
-		title = "#" + m.Chats.title(m.Chat.room)
+		prefix := "#"
+		if m.Chat.room.IsDirect() {
+			prefix = "@"
+		}
+		title = prefix + m.roomTitle(m.Chat.room)
 	}
-	return m.splitPane(title, right, left, m.chatColumn(rowsHeight), m.chatsHint())
+
+	widths := []int{m.listWidth(), m.detailWidth()}
+	columns := [][]string{left, m.chatColumn(rowsHeight)}
+	if m.showMembers() {
+		widths = append(widths, m.membersWidth())
+		columns = append(columns, m.memberColumn(rowsHeight))
+	}
+	return m.splitWorkspace(title, right, widths, columns)
 }
 
 // listWidth is the width of the room column in the chat workspace.
 func (m *Model) listWidth() int {
 	width := m.contentWidth()
-	list := max(24, min(width*2/5, 44))
+	list := max(24, min(width/3, 34))
 	return list
 }
 
-// chatColumn renders the right-hand side of the chat workspace: the open
-// conversation, or a prompt when no room is selected.
+// membersWidth is the width of the nicklist column.
+func (m *Model) membersWidth() int {
+	width := m.contentWidth()
+	return max(14, min(width/5, 22))
+}
+
+// showMembers reports whether a third column fits next to the transcript.
+func (m *Model) showMembers() bool {
+	return m.Chat.room.ID != "" && m.contentWidth() >= 76
+}
+
+// chatColumn renders the middle column: the transcript and the IRC-style
+// input line, or a prompt when no room is selected.
 func (m *Model) chatColumn(height int) []string {
 	c := &m.Chat
 	if c.room.ID == "" {
@@ -128,9 +148,12 @@ func (m *Model) chatColumn(height int) []string {
 	}
 
 	composer := 0
-	if c.typing {
-		composer = 3
-	} else if c.lastErr != "" {
+	switch {
+	case c.typing && c.sending:
+		composer = 2
+	case c.typing:
+		composer = 1
+	case c.lastErr != "":
 		composer = 2
 	}
 	logHeight := max(height-composer, 3)
@@ -151,7 +174,7 @@ func (m *Model) chatColumn(height int) []string {
 	}
 
 	if c.typing {
-		out = append(out, m.Styles.Label.Render("message"), c.input.View())
+		out = append(out, c.input.View())
 		if c.sending {
 			out = append(out, m.Spinner.View()+" "+m.Styles.Muted.Render("sending…"))
 		}
@@ -164,77 +187,116 @@ func (m *Model) chatColumn(height int) []string {
 // detailWidth is the width of the conversation column.
 func (m *Model) detailWidth() int {
 	width := m.contentWidth() - m.listWidth() - 3
+	if m.showMembers() {
+		width -= m.membersWidth() + 3
+	}
 	return max(width, 20)
 }
 
-// renderRoomRow renders one room as two lines.
+// renderRoomRow renders one room as one IRC-style line: the room name and
+// the last message date.
 func (m *Model) renderRoomRow(room api.ChatRoom, width int, selected bool) []string {
 	marker := "  "
 	if selected {
 		marker = m.Styles.Accent.Render("▸ ")
 	}
 
-	summary, hasSummary := m.Chats.summary[room.ID]
-	title := m.Chats.title(room)
+	title := truncate(m.roomTitle(room), max(width-4, 8))
+	line := marker + m.Styles.Bold.Render(title)
 
-	badge := ""
-	if summary.UnreadCount > 0 {
-		badge = fmt.Sprintf(" (%d)", summary.UnreadCount)
-	}
-	kind := roomKind(room)
-
-	// The header row is marker + title + badge, then the right-aligned kind.
-	right := ansi.StringWidth(kind) + 1
-	nameWidth := max(width-2-right-ansi.StringWidth(badge), 8)
-	title = truncate(title, nameWidth)
-	gap := width - 2 - ansi.StringWidth(title) - ansi.StringWidth(badge) - ansi.StringWidth(kind)
-	if gap < 1 {
-		gap = 1
-	}
-	head := marker + m.Styles.Bold.Render(title)
-	if badge != "" {
-		head += m.Styles.Accent.Render(badge)
-	}
-	head += strings.Repeat(" ", gap) + m.Styles.Muted.Render(kind)
-
-	preview := ""
-	if hasSummary && summary.LastMessage != nil {
-		last := *summary.LastMessage
-		text := strings.ReplaceAll(last.Text(), "\n", " ")
-		if text == "" && len(last.Attachments) > 0 {
-			text = "(" + plural(len(last.Attachments), "attachment", "attachments") + ")"
+	if stamp := m.roomStamp(room); stamp != "" {
+		gap := width - 2 - ansi.StringWidth(title) - ansi.StringWidth(stamp)
+		if gap < 1 {
+			gap = 1
 		}
-		preview = text
-		if !room.IsDirect() {
-			preview = last.Sender.DisplayName() + ": " + preview
-		}
+		line += strings.Repeat(" ", gap) + m.Styles.Muted.Render(stamp)
 	}
-	if preview == "" && room.Description != nil {
-		preview = strings.ReplaceAll(*room.Description, "\n", " ")
-	}
-	if preview == "" {
-		preview = "no messages yet"
-	}
-	line := "  " + m.Styles.Muted.Render(truncate(preview, max(width-4, 10)))
-	return []string{head, line}
+	return []string{line}
 }
 
-// title names a room. Direct rooms are named after the other participant,
-// which the unread summary reports as the last sender. Rooms without a summary
-// keep the server name, which is empty for a fresh direct chat.
-func (c *chatsModel) title(room api.ChatRoom) string {
+// roomStamp renders the last message date of a room.
+func (m *Model) roomStamp(room api.ChatRoom) string {
+	if summary, ok := m.Chats.summary[room.ID]; ok && summary.LastMessage != nil {
+		return shortTime(summary.LastMessage.CreatedAt)
+	}
+	return ""
+}
+
+// roomTitle names a room. Direct rooms are named after the other participant,
+// never the signed-in account.
+func (m *Model) roomTitle(room api.ChatRoom) string {
 	if !room.IsDirect() {
 		return room.Title()
 	}
-	if summary, ok := c.summary[room.ID]; ok && summary.LastMessage != nil {
-		if name := summary.LastMessage.Sender.DisplayName(); name != "" && name != "unknown" {
+	for _, member := range room.DirectMembers {
+		if m.isSelf(member) {
+			continue
+		}
+		if name := member.DisplayName(); name != "" && name != "unknown" {
 			return name
+		}
+	}
+	if summary, ok := m.Chats.summary[room.ID]; ok && summary.LastMessage != nil {
+		sender := summary.LastMessage.Sender
+		if !m.isSelf(sender) {
+			if name := sender.DisplayName(); name != "" && name != "unknown" {
+				return name
+			}
 		}
 	}
 	if room.Name != nil && *room.Name != "" {
 		return *room.Name
 	}
 	return "direct message"
+}
+
+// selfAccountID resolves the signed-in account, preferring the loaded
+// profile and falling back to the cached credential snapshot.
+func (m *Model) selfAccountID() string {
+	switch {
+	case m.Home.account.ID != "":
+		return m.Home.account.ID
+	case m.Home.identity.ID != "":
+		return m.Home.identity.ID
+	case m.Deps.Tokens != nil:
+		if creds := m.Deps.Tokens.Credentials(); creds != nil {
+			return creds.AccountID
+		}
+	}
+	return ""
+}
+
+// isSelf reports whether a room member is the signed-in account.
+func (m *Model) isSelf(member api.ChatMember) bool {
+	self := m.selfAccountID()
+	if self == "" {
+		return false
+	}
+	if strings.EqualFold(member.AccountID, self) {
+		return true
+	}
+	return member.Account != nil && strings.EqualFold(member.Account.ID, self)
+}
+
+// memberColumn renders the nicklist, always omitting the signed-in account.
+func (m *Model) memberColumn(height int) []string {
+	c := &m.Chat
+	out := []string{m.Styles.Label.Render("members")}
+	switch {
+	case !c.membersLoaded:
+		out = append(out, m.Spinner.View()+" "+m.Styles.Muted.Render("loading…"))
+	case len(c.members) == 0:
+		out = append(out, m.Styles.Muted.Render("no other members"))
+	default:
+		for _, member := range c.members {
+			if m.isSelf(member) {
+				continue
+			}
+			name := truncate(member.DisplayName(), max(m.membersWidth()-2, 6))
+			out = append(out, m.Styles.Foreground.Render(name))
+		}
+	}
+	return clipLines(out, height)
 }
 
 // sortByActivity orders rooms by their newest message, then by name.
@@ -255,22 +317,9 @@ func (c *chatsModel) sortByActivity() {
 	})
 }
 
-// chatsHint is the key legend of the chat workspace.
-func (m *Model) chatsHint() string {
-	if m.guest {
-		return "chats need a session — g sign in · tab sections · esc back"
-	}
-	if m.Chat.typing {
-		return "enter send · alt+enter newline · esc cancel"
-	}
-	if m.Chats.focused {
-		return m.chatHint()
-	}
-	return "j/k rooms · enter conversation · i write · tab sections · R reload · esc back"
-}
-
-// openRoom loads the highlighted room into the conversation column. Reopening
-// the room that is already showing keeps its scrollback instead of reloading.
+// openRoom loads the highlighted room into the transcript and nicklist.
+// Reopening the room that is already showing keeps its scrollback instead of
+// reloading.
 func (m *Model) openRoom() tea.Cmd {
 	room := m.Chats.selectedRoom()
 	if room == nil {
@@ -286,7 +335,7 @@ func (m *Model) openRoom() tea.Cmd {
 	m.Chat.room = *room
 	m.showScreen(ScreenChats)
 	m.Chats.focused = false
-	return m.loadMessagesCmd(room.ID)
+	return tea.Batch(m.loadMessagesCmd(room.ID), m.loadMembersCmd(room.ID))
 }
 
 // updateChatsMsg applies asynchronous room list results.

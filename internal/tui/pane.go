@@ -28,9 +28,8 @@ func (m *Model) bodyHeight() int {
 	return h
 }
 
-// pane renders a full-width screen: the section strip, a title row, the body
-// and a hint row.
-func (m *Model) pane(title, right string, body []string, hint string) string {
+// pane renders a full-width screen: a title row and the body.
+func (m *Model) pane(title, right string, body []string) string {
 	width := m.contentWidth()
 	height := m.bodyHeight()
 
@@ -43,7 +42,7 @@ func (m *Model) pane(title, right string, body []string, hint string) string {
 		head += strings.Repeat(" ", pad) + m.Styles.Muted.Render(right)
 	}
 
-	headerLines := []string{m.sectionHeader(), head, ""}
+	headerLines := []string{head, ""}
 	contentHeight := max(1, height-len(headerLines))
 	body = clipLines(body, contentHeight)
 
@@ -178,19 +177,11 @@ func visibleCards(lines [][]string, sel, height int) []int {
 	return out
 }
 
-// splitPane renders a two-column screen: a subheader row, two bodies separated by a
-// rule, matching the full-height chat workspace layout.
-func (m *Model) splitPane(title, right string, left, rightBody []string, hint string) string {
+// splitWorkspace renders a title row and a body of N columns separated by
+// vertical rules. Every column is padded and clipped to the body height.
+func (m *Model) splitWorkspace(title, right string, widths []int, columns [][]string) string {
 	width := m.contentWidth()
 	height := m.bodyHeight()
-
-	// The list column keeps a fixed share so the detail column stays readable.
-	listWidth := width * 2 / 5
-	listWidth = max(24, min(listWidth, 44))
-	detailWidth := width - listWidth - 3 // one space, the rule, one space
-	if detailWidth < 20 {
-		detailWidth = 20
-	}
 
 	head := m.Styles.Bold.Render(title)
 	if right != "" {
@@ -198,30 +189,42 @@ func (m *Model) splitPane(title, right string, left, rightBody []string, hint st
 		if gap < 1 {
 			gap = 1
 		}
-		head += " " + m.Styles.Muted.Render(strings.Repeat("─", gap)) + " " + m.Styles.Muted.Render(right)
+		head += strings.Repeat(" ", gap) + m.Styles.Muted.Render(right)
 	}
 
-	headerLines := []string{head}
-	rowsHeight := max(1, height-len(headerLines))
-
-	left = clipLines(padLines(left, listWidth), rowsHeight)
-	rightBody = clipLines(padLines(rightBody, detailWidth), rowsHeight)
+	rowsHeight := max(1, height-1)
+	padded := make([][]string, len(columns))
+	for i := range columns {
+		bodyWidth := width
+		if i < len(widths) {
+			bodyWidth = widths[i]
+		}
+		padded[i] = clipLines(padLines(columns[i], bodyWidth), rowsHeight)
+	}
 
 	rule := m.Styles.Muted.Render("│")
 	rows := make([]string, 0, rowsHeight)
-	for i := 0; i < rowsHeight; i++ {
-		l, r := "", ""
-		if i < len(left) {
-			l = left[i]
+	for row := range rowsHeight {
+		var line strings.Builder
+		for i := range padded {
+			if i > 0 {
+				line.WriteString(" " + rule + " ")
+			}
+			cell := ""
+			if row < len(padded[i]) {
+				cell = padded[i][row]
+			}
+			bodyWidth := width
+			if i < len(widths) {
+				bodyWidth = widths[i]
+			}
+			line.WriteString(padRight(cell, bodyWidth))
 		}
-		if i < len(rightBody) {
-			r = rightBody[i]
-		}
-		rows = append(rows, padRight(l, listWidth)+" "+rule+" "+r)
+		rows = append(rows, line.String())
 	}
 
-	lines := make([]string, 0, len(headerLines)+len(rows))
-	lines = append(lines, headerLines...)
+	lines := make([]string, 0, len(rows)+1)
+	lines = append(lines, head)
 	lines = append(lines, rows...)
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }

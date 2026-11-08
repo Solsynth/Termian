@@ -107,7 +107,7 @@ type AuthAPI interface {
 // ContentAPI is the subset of the Solian gateways the feeds and chats use.
 // Reads work without a session; writes need one.
 type ContentAPI interface {
-	Feed(context.Context, int, int) (api.Page[api.Post], error)
+	Timeline(context.Context, string, int, string, bool) (api.TimelinePage, error)
 	Bookmarks(context.Context, int, int) (api.Page[api.Post], error)
 	Post(context.Context, string) (api.Post, error)
 	Replies(context.Context, string, int, int) (api.Page[api.Post], error)
@@ -119,6 +119,7 @@ type ContentAPI interface {
 	Unbookmark(context.Context, string) error
 	Publishers(context.Context) ([]api.Publisher, error)
 	ChatRoomList(context.Context, int, int) (api.ChatRooms, error)
+	ChatMembers(context.Context, string, int, int) (api.Page[api.ChatMember], error)
 	ChatRoom(context.Context, string) (api.ChatRoom, error)
 	ChatMessages(context.Context, string, int, int) (api.Page[api.ChatMessage], error)
 	ChatSummaryByRoom(context.Context) (map[string]api.ChatSummary, error)
@@ -718,13 +719,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.Width, m.Height = msg.Width, msg.Height
 		m.sized = true
-		contentHeight := m.bodyHeight()
-		_ = contentHeight
 		contentWidth := m.contentWidth()
 		m.Login.setWidth(cardWidth(DeviceCardWidth, msg.Width))
 		m.Password.setWidth(cardWidth(PasswordCardWidth, msg.Width))
-		m.Home.setWidth(cardWidth(HomeCardWidth, msg.Width))
-		m.Chat.setWidth(contentWidth)
+		m.Chat.setWidth(m.detailWidth())
 		m.Compose.setWidth(contentWidth)
 		return m, nil
 
@@ -850,7 +848,7 @@ func (m *Model) handleScreenMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updatePostMsg(msg)
 	case roomsLoadedMsg:
 		return m.updateChatsMsg(msg)
-	case messagesLoadedMsg, sentMessageMsg, chatReactionMsg:
+	case messagesLoadedMsg, membersLoadedMsg, sentMessageMsg, chatReactionMsg:
 		return m.updateChatMsg(msg)
 	case postCreatedMsg, replyCreatedMsg, postUpdatedMsg:
 		return m.updateComposeMsg(msg)
@@ -1013,7 +1011,7 @@ func (m *Model) resetContentPanes() {
 	m.Post = newPostModel()
 	m.Chats = newChatsModel()
 	m.Chat = newChatModel()
-	m.Chat.setWidth(m.contentWidth())
+	m.Chat.setWidth(m.detailWidth())
 	m.Compose = newComposeModel()
 	m.Compose.setWidth(m.contentWidth())
 	m.Compose.input.SetStyles(textareaStyles(m.Styles))

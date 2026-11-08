@@ -1,11 +1,6 @@
 package tui
 
-import (
-	"strings"
-
-	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/x/ansi"
-)
+import "charm.land/bubbletea/v2"
 
 // section is a top-level browsing area, switched with tab.
 type section int
@@ -40,26 +35,6 @@ func (m *Model) currentSection() section {
 		return sectionTimeline
 	}
 	return sectionTimeline
-}
-
-// sectionHeader renders the tab strip: every section, the active one accented.
-func (m *Model) sectionHeader() string {
-	active := m.currentSection()
-	parts := make([]string, 0, 3)
-	for _, s := range []section{sectionTimeline, sectionChats, sectionBookmarks} {
-		label := s.String()
-		if s == active {
-			parts = append(parts, m.Styles.Selected.Render(label))
-			continue
-		}
-		parts = append(parts, m.Styles.Muted.Render(label))
-	}
-	strip := strings.Join(parts, m.Styles.Muted.Render("  ·  "))
-	// Pad to the content width so the header reads as a bar.
-	if gap := m.contentWidth() - ansi.StringWidth(strip); gap > 0 {
-		strip += strings.Repeat(" ", gap)
-	}
-	return strip
 }
 
 // switchSection moves to a section, retaining state if already loaded.

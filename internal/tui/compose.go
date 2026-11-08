@@ -30,7 +30,7 @@ func newComposeModel() composeModel {
 	ta.Prompt = ""
 	ta.CharLimit = 5000
 	ta.SetHeight(6)
-	ta.SetWidth(HomeCardWidth)
+	ta.SetWidth(DefaultInputWidth)
 	ta.KeyMap.InsertNewline.SetKeys("alt+enter", "ctrl+j")
 	return composeModel{input: ta}
 }
@@ -108,11 +108,7 @@ func (m *Model) composeView() string {
 	if c.posting {
 		body = append(body, "", m.Spinner.View()+" "+m.Styles.Muted.Render("posting…"))
 	}
-	verb := "post"
-	if c.editing != nil {
-		verb = "save"
-	}
-	return m.pane(title, "compose", body, "ctrl+d "+verb+" · esc cancel · alt+enter newline")
+	return m.pane(title, "compose", body)
 }
 
 // updateComposeKey handles keys on the composer.
@@ -188,7 +184,9 @@ func (m *Model) updateComposeMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		loaded := m.Feed.loaded
 		if loaded {
 			m.Feed.items = append([]api.Post{msg.post}, m.Feed.items...)
-			m.Feed.total++
+			if m.Feed.mode == feedBookmarks {
+				m.Feed.total++
+			}
 			m.Feed.selected = 0
 		}
 		m.closeCompose()

@@ -20,6 +20,9 @@ type ChatRoom struct {
 	Picture     *CloudFile `json:"picture"`
 	CreatedAt   *time.Time `json:"created_at"`
 	UpdatedAt   *time.Time `json:"updated_at"`
+	// DirectMembers is the other participants of a direct room, already
+	// filtered to exclude the signed-in account by the server.
+	DirectMembers []ChatMember `json:"direct_members"`
 }
 
 // ChatRoomType codes sent by the server.
@@ -134,6 +137,14 @@ func (c *Client) ChatRoomList(ctx context.Context, offset, take int) (ChatRooms,
 	var out ChatRooms
 	err := c.doRoot(ctx, http.MethodGet, pagePath("/messager/chat", offset, take), nil, &out)
 	return out, err
+}
+
+// ChatMembers lists the members of a room. The server caps a page at 100.
+func (c *Client) ChatMembers(ctx context.Context, roomID string, offset, take int) (Page[ChatMember], error) {
+	var items []ChatMember
+	meta, err := c.doRootPage(ctx, http.MethodGet,
+		pagePath("/messager/chat/"+roomID+"/members", offset, take), nil, &items)
+	return Page[ChatMember]{Items: items, Total: totalFrom(meta.Header)}, err
 }
 
 // ChatRoom fetches one room.

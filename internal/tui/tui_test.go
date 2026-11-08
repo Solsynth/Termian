@@ -269,8 +269,10 @@ func TestDeviceLoginScenario(t *testing.T) {
 	rec.waitState("the session shell", func(s Snapshot) bool {
 		return s.Screen == ScreenHome && s.HomeLoaded && s.AccountName == "alice"
 	})
-	rec.wait("the account card", func(flat string) bool {
-		return strings.Contains(flat, "level7·1234XP") && strings.Contains(flat, "SignedintoSolian")
+	rec.wait("the profile page", func(flat string) bool {
+		return strings.Contains(flat, "Profile") &&
+			strings.Contains(flat, "level7·1234XP") &&
+			strings.Contains(flat, "@alice")
 	})
 
 	final := rec.finish()

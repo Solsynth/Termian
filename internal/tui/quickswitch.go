@@ -55,7 +55,7 @@ func (m *Model) quickItems() []quickItem {
 
 	for _, room := range m.Chats.rooms {
 		r := room
-		title := m.Chats.title(r)
+		title := m.roomTitle(r)
 		items = append(items, quickItem{
 			label: "# " + title,
 			action: func(m *Model) (tea.Model, tea.Cmd) {

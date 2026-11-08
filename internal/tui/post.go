@@ -88,7 +88,7 @@ func (m *Model) postView() string {
 
 	if !p.loaded {
 		return m.pane(title, right,
-			[]string{m.Spinner.View() + " " + m.Styles.Muted.Render("loading post…")}, m.postHint())
+			[]string{m.Spinner.View() + " " + m.Styles.Muted.Render("loading post…")})
 	}
 
 	// The post card and every reply card are windowed together so the focused
@@ -110,7 +110,7 @@ func (m *Model) postView() string {
 	if len(p.replies) == 0 && p.loaded {
 		body = append(body, cards[0]...)
 		body = append(body, m.Styles.Muted.Render("no replies yet — press c to write one"))
-		return m.pane(title, right, body, m.postHint())
+		return m.pane(title, right, body)
 	}
 	// The selection indexes replies; card 0 is the post, card 1 the divider.
 	sel := 0
@@ -120,19 +120,7 @@ func (m *Model) postView() string {
 	for _, i := range visibleCards(cards, sel, m.bodyHeight()) {
 		body = append(body, cards[i]...)
 	}
-	return m.pane(title, right, body, m.postHint())
-}
-
-// postHint is the key legend of the detail pane.
-func (m *Model) postHint() string {
-	if m.guest {
-		return "j/k move · r react · esc back · g sign in"
-	}
-	hint := "j/k move · r react · b bookmark · c reply · e edit · d delete · o open file · R reload · esc back"
-	if m.Deps.Attachments == "preview" {
-		hint = "j/k move · r react · b bookmark · c reply · e edit · d delete · o open · p preview · R reload"
-	}
-	return hint
+	return m.pane(title, right, body)
 }
 
 // updatePostKey handles keys on the detail pane.

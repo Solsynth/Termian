@@ -42,7 +42,7 @@ moves to the session shell.
 | `termian logout` | Revokes the session server-side and deletes local credentials |
 | `termian whoami` | Prints the account and session |
 | `termian refresh` | Rotates the access token and prints the new expiry |
-| `termian feed` | Lists the public timeline (no session needed) |
+| `termian feed` | Lists the ranked timeline (`--mode`, `--cursor`); works with or without a session |
 | `termian post <id>` | Prints a post and its replies |
 | `termian publish` | Publishes a post (`--content`, `--file -`, `--publisher`, `--title`) |
 | `termian reply <id>` | Replies to a post |
@@ -54,8 +54,9 @@ moves to the session shell.
 | `termian chat <room-id>` | Prints a room's messages; `--send --content …` posts one |
 | `termian version` | Prints the build version |
 
-`feed` and `post` read public data, so they work before signing in. Everything
-else needs a session and exits 3 without one.
+`feed` and `post` read public data, so they work before signing in; `feed`
+ranks for the account when a session is available. Everything else needs a
+session and exits 3 without one.
 
 Flow selection:
 
@@ -95,7 +96,8 @@ one line on stderr. Each record carries `type`:
 | `whoami` | `{"type":"account","account","session","server","storage"}` |
 | `refresh` | `{"type":"refreshed","access_expires_at","refresh_expires_at","server","storage"}` |
 | `logout` | `{"type":"logged_out","server","revoked"}` |
-| `feed`, `bookmarks` | `{"type":"post","post":{...}}` per post |
+| `feed` | `{"type":"post","post":{...}}` per post, then `{"type":"timeline","mode","next_cursor"}` |
+| `bookmarks` | `{"type":"post","post":{...}}` per post |
 | `post` | `{"type":"post",...}` then `{"type":"reply","post","reply"}` per reply |
 | `publish`, `reply` | `{"type":"created","post":{...}}` |
 | `react` | `{"type":"reaction","post","symbol","is_present"}` |
@@ -232,10 +234,12 @@ previews are cached for the session.
 ## Sections
 
 The browsing panes share one workspace, switched with `tab`: **timeline**,
-**chats**, **bookmarks**. The strip at the top of every pane shows where you are.
+**chats**, **bookmarks**. The pane header names the active list.
 
-Chat is a two-column workspace, like the Solian app: rooms on the left with
-unread badges and last-message previews, the conversation on the right. The room
+Chat is an IRC-style workspace in three columns: rooms on the left (only the
+room name and the date of its last message), the transcript in the middle as
+`time <nick> text` lines, and the room's nicklist on the right. The nicklist is
+hidden on narrow terminals and never shows the signed-in account. The room
 column owns the keys until `enter` steps into the conversation; `h` returns.
 
 Chat scrollback pages backwards through the room history 50 messages at a time

@@ -16,15 +16,17 @@ import (
 type feedOptions struct {
 	limit  int
 	offset int
+	cursor string
+	mode   string
 }
 
-// feedCommand lists the public timeline.
+// feedCommand lists the ranked timeline.
 func (a *app) feedCommand() *cobra.Command {
 	var opts feedOptions
 	cmd := &cobra.Command{
 		Use:   "feed",
-		Short: "List the public timeline",
-		Long: "Lists the public timeline. No session is needed, so this works\n" +
+		Short: "List the ranked timeline",
+		Long: "Lists the ranked activity timeline. No session is needed, so this works\n" +
 			"before signing in and in scripts that only read.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -32,7 +34,8 @@ func (a *app) feedCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().IntVar(&opts.limit, "limit", 20, "number of posts to print")
-	cmd.Flags().IntVar(&opts.offset, "offset", 0, "pagination offset")
+	cmd.Flags().StringVar(&opts.cursor, "cursor", "", "timeline cursor from a previous page")
+	cmd.Flags().StringVar(&opts.mode, "mode", "personalized", "ranking: personalized, top or latest")
 	return cmd
 }
 
@@ -41,11 +44,22 @@ func (a *app) runFeed(ctx context.Context, opts feedOptions) error {
 	if err := a.prepare(); err != nil {
 		return err
 	}
-	page, err := a.client.Feed(ctx, opts.offset, opts.limit)
+	page, err := a.client.Timeline(ctx, opts.cursor, opts.limit, opts.mode, true)
 	if err != nil {
 		return err
 	}
-	return a.printPosts(page.Items, page.Total)
+	if err := a.printPosts(page.Posts(), 0); err != nil {
+		return err
+	}
+	if a.out.JSON() {
+		return a.out.Emit(map[string]any{
+			"type": ui.RecordTimeline, "mode": page.Mode, "next_cursor": page.NextCursor,
+		})
+	}
+	if page.NextCursor != "" {
+		a.out.Progressf("next cursor: %s", page.NextCursor)
+	}
+	return nil
 }
 
 // printPosts renders a post page as a table or as records.
@@ -66,7 +80,11 @@ func (a *app) printPosts(posts []api.Post, total int) error {
 		fmt.Fprintln(a.stdout, "no posts")
 		return nil
 	}
-	a.out.Progressf("%d of %d posts", len(payloads), total)
+	if total > 0 {
+		a.out.Progressf("%d of %d posts", len(payloads), total)
+	} else {
+		a.out.Progressf("%d posts", len(payloads))
+	}
 	return a.out.Table(ui.RecordPost, postHeaders, postRows(payloads))
 }
 

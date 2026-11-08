@@ -22,8 +22,11 @@ func TestFeedReadsWithoutSession(t *testing.T) {
 		t.Fatalf("feed exit = %d (stderr %s)", res.code, res.stderr)
 	}
 	records := ndjson(t, res.stdout)
-	if len(records) != 2 {
+	if len(records) != 3 {
 		t.Fatalf("records = %v", records)
+	}
+	if meta := records[2]; meta["type"] != "timeline" || meta["next_cursor"] != "2026-11-07T00:00:00Z" {
+		t.Fatalf("timeline meta = %v", meta)
 	}
 	post, ok := records[0]["post"].(map[string]any)
 	if !ok || post["id"] != "p1" {

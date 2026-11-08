@@ -9,34 +9,60 @@ import (
 	"testing"
 )
 
-// TestFeedWireContract pins the timeline request and the X-Total total.
-func TestFeedWireContract(t *testing.T) {
+// TestTimelineWireContract pins the ranked timeline request, the cursor loop
+// and the post filtering.
+func TestTimelineWireContract(t *testing.T) {
+	requests := 0
 	client, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/sphere/posts" {
+		requests++
+		if r.URL.Path != "/sphere/timeline" {
 			t.Errorf("path = %q", r.URL.Path)
 		}
-		if got := r.URL.Query().Get("offset"); got != "20" {
-			t.Errorf("offset = %q", got)
-		}
-		if got := r.URL.Query().Get("take"); got != "5" {
+		query := r.URL.Query()
+		if got := query.Get("take"); got != "5" {
 			t.Errorf("take = %q", got)
 		}
-		w.Header().Set("X-Total", "42")
-		io.WriteString(w, `[{"id":"p1","content":"hi","publisher":{"id":"u1","name":"alice","nick":"Alice"}}]`)
+		if got := query.Get("mode"); got != "latest" {
+			t.Errorf("mode = %q", got)
+		}
+		if got := query.Get("aggressive"); got != "true" {
+			t.Errorf("aggressive = %q", got)
+		}
+		switch requests {
+		case 1:
+			if got := query.Get("cursor"); got != "" {
+				t.Errorf("first cursor = %q", got)
+			}
+			io.WriteString(w, `{"items":[{"id":"e1","type":"presence.friend","data":{}}],"next_cursor":"2026-11-08T00:00:00Z"}`)
+		case 2:
+			if got := query.Get("cursor"); got != "2026-11-08T00:00:00Z" {
+				t.Errorf("next cursor = %q", got)
+			}
+			io.WriteString(w, `{"items":[{"id":"p1","type":"posts.new","data":{"id":"p1","content":"hi","publisher":{"id":"u1","name":"alice","nick":"Alice"}}}],"next_cursor":"older","mode":"latest"}`)
+		default:
+			t.Errorf("unexpected request %d", requests)
+		}
 	})
 
-	page, err := client.Feed(context.Background(), 20, 5)
+	page, err := client.Timeline(context.Background(), "", 5, "latest", true)
 	if err != nil {
-		t.Fatalf("Feed: %v", err)
+		t.Fatalf("Timeline: %v", err)
 	}
-	if page.Total != 42 || len(page.Items) != 1 {
+	if page.NextCursor != "older" || page.Mode != "latest" {
 		t.Fatalf("page = %+v", page)
 	}
-	if got := page.Items[0].AuthorName(); got != "Alice" {
+	posts := page.Posts()
+	if len(posts) != 1 {
+		t.Fatalf("posts = %+v", posts)
+	}
+	if got := posts[0].AuthorName(); got != "Alice" {
 		t.Errorf("author = %q", got)
 	}
-	if got := page.Items[0].AuthorHandle(); got != "alice" {
+	if got := posts[0].AuthorHandle(); got != "alice" {
 		t.Errorf("handle = %q", got)
+	}
+	if requests != 2 {
+		t.Errorf("requests = %d, want 2", requests)
 	}
 }
 
@@ -206,6 +232,55 @@ func TestChatRoomListDecodesGroups(t *testing.T) {
 	}
 }
 
+// TestChatMembersWireContract pins the member listing endpoint and its page
+// total.
+func TestChatMembersWireContract(t *testing.T) {
+	var take string
+	client, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/messager/chat/r1/members" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		take = r.URL.Query().Get("take")
+		w.Header().Set("X-Total", "2")
+		io.WriteString(w, `[
+			{"id":"m1","account_id":"a1","account":{"id":"a1","name":"alice","nick":"Alice"}},
+			{"id":"m2","account_id":"a2","account":{"id":"a2","name":"bob","nick":"Bob"}}
+		]`)
+	})
+
+	page, err := client.ChatMembers(context.Background(), "r1", 0, 100)
+	if err != nil {
+		t.Fatalf("ChatMembers: %v", err)
+	}
+	if take != "100" || page.Total != 2 || len(page.Items) != 2 {
+		t.Fatalf("take=%q total=%d items=%d", take, page.Total, len(page.Items))
+	}
+	if got := page.Items[0].DisplayName(); got != "Alice" {
+		t.Errorf("member = %q", got)
+	}
+}
+
+// TestChatRoomListDecodesDirectMembers pins the other-participant snapshot the
+// server embeds in direct rooms.
+func TestChatRoomListDecodesDirectMembers(t *testing.T) {
+	client, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"rooms":[{"id":"dm1","type":1,"direct_members":[
+			{"account_id":"a1","account":{"id":"a1","name":"alice","nick":"Alice"}}
+		]}]}`)
+	})
+
+	rooms, err := client.ChatRoomList(context.Background(), 0, 20)
+	if err != nil {
+		t.Fatalf("ChatRoomList: %v", err)
+	}
+	if len(rooms.Rooms) != 1 || len(rooms.Rooms[0].DirectMembers) != 1 {
+		t.Fatalf("rooms = %+v", rooms.Rooms)
+	}
+	if got := rooms.Rooms[0].DirectMembers[0].DisplayName(); got != "Alice" {
+		t.Errorf("direct member = %q", got)
+	}
+}
+
 // TestRootEndpointDropsGateway pins how a custom gateway path resolves.
 func TestRootEndpointDropsGateway(t *testing.T) {
 	cases := map[string]string{
@@ -230,16 +305,19 @@ func TestContentEndpointsUseRootPath(t *testing.T) {
 	var paths []string
 	client, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
-		if r.URL.Path == "/messager/chat" {
+		switch r.URL.Path {
+		case "/messager/chat":
 			io.WriteString(w, `{"rooms":[],"groups":[]}`)
-			return
+		case "/sphere/timeline":
+			io.WriteString(w, `{"items":[]}`)
+		default:
+			io.WriteString(w, `[]`)
 		}
-		io.WriteString(w, `[]`)
 	})
 
 	ctx := context.Background()
-	if _, err := client.Feed(ctx, 0, 1); err != nil {
-		t.Fatalf("Feed: %v", err)
+	if _, err := client.Timeline(ctx, "", 1, "", true); err != nil {
+		t.Fatalf("Timeline: %v", err)
 	}
 	if _, err := client.Publishers(ctx); err != nil {
 		t.Fatalf("Publishers: %v", err)

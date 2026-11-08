@@ -62,6 +62,38 @@ func (p Publisher) Display() string {
 	return p.Handle()
 }
 
+// TimelineEvent is one entry of GET /sphere/timeline. A post event carries the
+// post in Data; presence, status and discovery events carry their own payloads.
+type TimelineEvent struct {
+	ID                 string `json:"id"`
+	Type               string `json:"type"`
+	ResourceIdentifier string `json:"resource_identifier"`
+	Data               Post   `json:"data"`
+}
+
+// IsPost reports whether the event carries a post.
+func (e TimelineEvent) IsPost() bool {
+	return strings.HasPrefix(e.Type, "posts.new")
+}
+
+// TimelinePage is one page of the ranked activity timeline.
+type TimelinePage struct {
+	Items      []TimelineEvent `json:"items"`
+	NextCursor string          `json:"next_cursor"`
+	Mode       string          `json:"mode"`
+}
+
+// Posts returns the posts of the page, dropping the non-post activities.
+func (p TimelinePage) Posts() []Post {
+	posts := make([]Post, 0, len(p.Items))
+	for _, event := range p.Items {
+		if event.IsPost() && event.Data.ID != "" {
+			posts = append(posts, event.Data)
+		}
+	}
+	return posts
+}
+
 // Post is one sphere post: a status, an article, a reply or a repost.
 type Post struct {
 	ID            string          `json:"id"`
@@ -142,11 +174,38 @@ func (c *Client) FileURL(id string) string {
 	return c.rootEndpoint("/drive/files/" + url.PathEscape(id))
 }
 
-// Feed lists the public timeline (GET /sphere/posts).
-func (c *Client) Feed(ctx context.Context, offset, take int) (Page[Post], error) {
-	var items []Post
-	meta, err := c.doRootPage(ctx, http.MethodGet, pagePath("/sphere/posts", offset, take), nil, &items)
-	return Page[Post]{Items: items, Total: totalFrom(meta.Header)}, err
+// Timeline lists the ranked activity timeline. cursor is the previous page's
+// NextCursor; empty asks for the first page. mode is personalized, top or
+// latest, and aggressive enables the server's stricter ranking.
+//
+// Pages made only of presence, status or discovery events are skipped so a
+// caller always gets a page that either holds posts or ends the timeline.
+func (c *Client) Timeline(ctx context.Context, cursor string, take int, mode string, aggressive bool) (TimelinePage, error) {
+	if take <= 0 {
+		take = 20
+	}
+	if mode == "" {
+		mode = "personalized"
+	}
+	var page TimelinePage
+	for range 4 {
+		query := url.Values{}
+		query.Set("take", strconv.Itoa(take))
+		query.Set("mode", mode)
+		query.Set("aggressive", strconv.FormatBool(aggressive))
+		if cursor != "" {
+			query.Set("cursor", cursor)
+		}
+		page = TimelinePage{}
+		if err := c.doRoot(ctx, http.MethodGet, "/sphere/timeline?"+query.Encode(), nil, &page); err != nil {
+			return TimelinePage{}, err
+		}
+		if len(page.Posts()) > 0 || page.NextCursor == "" {
+			return page, nil
+		}
+		cursor = page.NextCursor
+	}
+	return page, nil
 }
 
 // Bookmarks lists the signed-in account's bookmarks.

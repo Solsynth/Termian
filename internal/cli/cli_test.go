@@ -143,10 +143,11 @@ func (f *fakeServer) handle(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, `{"id":"acc-1","name":"alice","nick":"Alice","perk_level":2,
 			"profile":{"level":7,"experience":1234,"created_at":"2024-01-02T03:04:05Z"}}`)
 
-	case path == "/sphere/posts" && r.Method == http.MethodGet:
-		w.Header().Set("X-Total", "2")
-		io.WriteString(w, `[{"id":"p1","content":"hello world","publisher":{"id":"u1","name":"alice","nick":"Alice"},"reactions_count":{"heart":2}},
-			{"id":"p2","content":"second post","publisher":{"id":"u2","name":"bob","nick":"Bob"}}]`)
+	case path == "/sphere/timeline" && r.Method == http.MethodGet:
+		io.WriteString(w, `{"items":[
+			{"id":"p1","type":"posts.new","data":{"id":"p1","content":"hello world","publisher":{"id":"u1","name":"alice","nick":"Alice"},"reactions_count":{"heart":2}}},
+			{"id":"p2","type":"posts.new.replies","data":{"id":"p2","content":"second post","publisher":{"id":"u2","name":"bob","nick":"Bob"}}}
+		],"next_cursor":"2026-11-07T00:00:00Z","mode":"personalized"}`)
 
 	case path == "/sphere/posts" && r.Method == http.MethodPost:
 		var body map[string]any

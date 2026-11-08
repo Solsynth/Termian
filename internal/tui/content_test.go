@@ -28,6 +28,7 @@ type fakeContent struct {
 	rooms     api.ChatRooms
 	summary   map[string]api.ChatSummary
 	messages  map[string][]api.ChatMessage
+	members   map[string][]api.ChatMember
 
 	// calls records the write calls, in order.
 	calls []string
@@ -76,7 +77,11 @@ func newFakeContent() *fakeContent {
 		summary: map[string]api.ChatSummary{
 			room.ID: {UnreadCount: 1, HasUnread: true, LastMessage: &msg},
 		},
-		messages:  map[string][]api.ChatMessage{room.ID: {msg}},
+		messages: map[string][]api.ChatMessage{room.ID: {msg}},
+		members: map[string][]api.ChatMember{room.ID: {
+			{ID: "member-1", AccountID: "account-1", Account: &api.ChatUser{ID: "account-1", Name: "alice", Nick: "Alice"}},
+			{ID: "member-2", AccountID: "account-2", Account: &api.ChatUser{ID: "account-2", Name: "bob", Nick: "Bob"}},
+		}},
 		reactions: map[string]int{},
 	}
 }
@@ -84,11 +89,17 @@ func newFakeContent() *fakeContent {
 // ptr returns a pointer to v.
 func ptr[T any](v T) *T { return &v }
 
-// Feed returns the scripted timeline.
-func (f *fakeContent) Feed(context.Context, int, int) (api.Page[api.Post], error) {
+// Timeline returns the scripted timeline as post events.
+func (f *fakeContent) Timeline(context.Context, string, int, string, bool) (api.TimelinePage, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return api.Page[api.Post]{Items: f.feed, Total: f.feedTotal}, nil
+	events := make([]api.TimelineEvent, 0, len(f.feed))
+	for _, post := range f.feed {
+		events = append(events, api.TimelineEvent{
+			ID: post.ID, Type: "posts.new", ResourceIdentifier: post.ID, Data: post,
+		})
+	}
+	return api.TimelinePage{Items: events}, nil
 }
 
 // Bookmarks returns the scripted bookmarks.
@@ -286,6 +297,16 @@ func (f *fakeContent) ChatSummaryByRoom(context.Context) (map[string]api.ChatSum
 	return f.summary, nil
 }
 
+// ChatMembers returns the scripted room members.
+func (f *fakeContent) ChatMembers(_ context.Context, roomID string, _, take int) (api.Page[api.ChatMember], error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.members) == 0 {
+		return api.Page[api.ChatMember]{}, nil
+	}
+	return api.Page[api.ChatMember]{Items: f.members[roomID]}, nil
+}
+
 // SendChatMessage records an outgoing message.
 func (f *fakeContent) SendChatMessage(_ context.Context, roomID string, req api.NewMessage) (api.ChatMessage, error) {
 	f.mu.Lock()
@@ -350,6 +371,22 @@ func waitFeed(r *recorder) {
 	r.waitState("the timeline", func(s Snapshot) bool {
 		return s.Screen == ScreenFeed && s.FeedCount > 0
 	})
+}
+
+// applyCmd runs a command and folds its message, including batched commands,
+// back into the model.
+func applyCmd(m *Model, cmd tea.Cmd) *Model {
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, sub := range batch {
+			if sub != nil {
+				m = applyCmd(m, sub)
+			}
+		}
+		return m
+	}
+	updated, _ := m.Update(msg)
+	return updated.(*Model)
 }
 
 // TestGuestFeedBrowsesTimeline covers the guest path: the login pane opens the
@@ -505,7 +542,7 @@ func TestChatsOpenRoomAndSend(t *testing.T) {
 		return s.Screen == ScreenChats && s.ChatCount == 1
 	})
 	rec.wait("the room row", func(flat string) bool {
-		return strings.Contains(flat, "General") && strings.Contains(flat, "Alice:firstmessage")
+		return strings.Contains(flat, "General")
 	})
 
 	rec.send(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -692,8 +729,7 @@ func TestChatScrollbackPagesOlderHistory(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("opening the room did not load messages")
 	}
-	updated, _ = final.Update(cmd())
-	final = updated.(*Model)
+	final = applyCmd(final, cmd)
 	if len(final.Chat.messages) != 2 {
 		t.Fatalf("messages = %d, want 2", len(final.Chat.messages))
 	}
@@ -816,20 +852,6 @@ func TestTabSwitchesSections(t *testing.T) {
 	}
 }
 
-// TestSectionStripIsVisible keeps the tab strip in every content pane.
-func TestSectionStripIsVisible(t *testing.T) {
-	content := newFakeContent()
-	deps := newContentDeps(t, &fakeAPI{}, content, true)
-	model := NewModelWithScreen(deps, ScreenFeed)
-	model.Width, model.Height, model.sized = 100, 30, true
-	model.Feed.loaded = true
-
-	flat := flatten(model.render())
-	if !strings.Contains(flat, "timeline·chats·bookmarks") {
-		t.Fatalf("tab strip missing:\n%s", flat)
-	}
-}
-
 // TestChatWorkspaceOpensFirstRoom covers the split view: loading the room list
 // opens the newest room in the conversation column.
 func TestChatWorkspaceOpensFirstRoom(t *testing.T) {
@@ -845,8 +867,7 @@ func TestChatWorkspaceOpensFirstRoom(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("the first room was not opened")
 	}
-	updated, _ = final.Update(cmd())
-	final = updated.(*Model)
+	final = applyCmd(final, cmd)
 	if final.Chat.room.ID != "room-1" || len(final.Chat.messages) != 1 {
 		t.Fatalf("chat = %+v", final.Chat.room)
 	}
@@ -854,5 +875,52 @@ func TestChatWorkspaceOpensFirstRoom(t *testing.T) {
 	flat := flatten(final.render())
 	if !strings.Contains(flat, "General") || !strings.Contains(flat, "firstmessage") {
 		t.Fatalf("workspace is missing a column:\n%s", flat)
+	}
+}
+
+// TestChatIRCWorkspace pins the IRC layout: room rows carry only a name and
+// a last-message date, and the nicklist hides the signed-in account.
+func TestChatIRCWorkspace(t *testing.T) {
+	content := newFakeContent()
+	deps := newContentDeps(t, &fakeAPI{}, content, true)
+
+	model := NewModelWithScreen(deps, ScreenChats)
+	model.Width, model.Height, model.sized = 100, 30, true
+	model.Home.account = api.Account{ID: "account-2", Name: "bob", Nick: "Bob"}
+
+	room := content.rooms.Rooms[0]
+	model.Chats.summary = content.summary
+	row := flatten(strings.Join(model.renderRoomRow(room, 30, false), "\n"))
+	if !strings.Contains(row, "General") {
+		t.Fatalf("room row lost the name: %q", row)
+	}
+	stamp := flatten(shortTime(content.summary[room.ID].LastMessage.CreatedAt))
+	if !strings.Contains(row, stamp) {
+		t.Fatalf("room row lost the last-message date: %q", row)
+	}
+	if strings.Contains(row, "firstmessage") {
+		t.Fatalf("room row still carries a message preview: %q", row)
+	}
+
+	model.Chat.members = content.members[room.ID]
+	model.Chat.membersLoaded = true
+	nicks := flatten(strings.Join(model.memberColumn(20), "\n"))
+	if !strings.Contains(nicks, "Alice") {
+		t.Fatalf("nicklist lost the other member: %q", nicks)
+	}
+	if strings.Contains(nicks, "Bob") {
+		t.Fatalf("nicklist shows the signed-in account: %q", nicks)
+	}
+
+	direct := api.ChatRoom{
+		ID:   "dm-1",
+		Type: api.ChatRoomDirect,
+		DirectMembers: []api.ChatMember{
+			{ID: "member-2", AccountID: "account-2", Account: &api.ChatUser{ID: "account-2", Name: "bob", Nick: "Bob"}},
+			{ID: "member-1", AccountID: "account-1", Account: &api.ChatUser{ID: "account-1", Name: "alice", Nick: "Alice"}},
+		},
+	}
+	if got := model.roomTitle(direct); got != "Alice" {
+		t.Fatalf("direct room title = %q, want the other participant", got)
 	}
 }

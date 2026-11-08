@@ -33,6 +33,7 @@ const (
 	RecordError         = "error"
 
 	// Content records: the timeline, posts and chats.
+	RecordTimeline    = "timeline"
 	RecordPost        = "post"
 	RecordReply       = "reply"
 	RecordCreated     = "created"

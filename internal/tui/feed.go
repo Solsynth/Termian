@@ -37,7 +37,9 @@ func (f feedMode) String() string {
 type feedModel struct {
 	mode     feedMode
 	items    []api.Post
-	total    int
+	total    int // bookmarks only: the server's total
+	cursor   string
+	more     bool // timeline only: the server has another page
 	selected int
 	loaded   bool
 	loading  bool
@@ -51,8 +53,11 @@ func (f *feedModel) reset(mode feedMode) {
 	f.mode = mode
 	f.items = nil
 	f.total = 0
+	f.cursor = ""
+	f.more = false
 	f.selected = 0
 	f.loaded = false
+	f.loading = false
 }
 
 // selectedPost returns the highlighted post.
@@ -64,14 +69,22 @@ func (f *feedModel) selectedPost() *api.Post {
 }
 
 // hasMore reports whether another page exists.
-func (f *feedModel) hasMore() bool { return len(f.items) < f.total }
+func (f *feedModel) hasMore() bool {
+	if f.mode == feedBookmarks {
+		return len(f.items) < f.total
+	}
+	return f.more
+}
 
 // feedLoadedMsg carries one page of posts.
 type feedLoadedMsg struct {
-	mode  feedMode
-	page  api.Page[api.Post]
-	first int
-	err   error
+	mode   feedMode
+	posts  []api.Post
+	total  int
+	cursor string
+	more   bool
+	first  int
+	err    error
 }
 
 // loadFeedCmd fetches one page starting at first.
@@ -85,10 +98,22 @@ func (m *Model) loadFeedCmd(mode feedMode, first int) tea.Cmd {
 				return feedLoadedMsg{mode: mode, first: first, err: err}
 			}
 			page, err := m.Deps.Content.Bookmarks(ctx, first, feedPageSize)
-			return feedLoadedMsg{mode: mode, page: page, first: first, err: err}
+			return feedLoadedMsg{
+				mode: mode, posts: page.Items, total: page.Total, first: first, err: err,
+			}
 		}
-		page, err := m.Deps.Content.Feed(ctx, first, feedPageSize)
-		return feedLoadedMsg{mode: mode, page: page, first: first, err: err}
+		cursor := ""
+		if first > 0 {
+			cursor = m.Feed.cursor
+		}
+		page, err := m.Deps.Content.Timeline(ctx, cursor, feedPageSize, "", true)
+		if err != nil {
+			return feedLoadedMsg{mode: mode, first: first, err: err}
+		}
+		return feedLoadedMsg{
+			mode: mode, posts: page.Posts(), cursor: page.NextCursor,
+			more: page.NextCursor != "", first: first,
+		}
 	})
 }
 
@@ -110,7 +135,7 @@ func (m *Model) feedView() string {
 
 	if !f.loaded {
 		return m.pane("Feed", f.mode.String(),
-			[]string{m.Spinner.View() + " " + m.Styles.Muted.Render("loading posts…")}, m.feedHint())
+			[]string{m.Spinner.View() + " " + m.Styles.Muted.Render("loading posts…")})
 	}
 
 	var body []string
@@ -126,16 +151,11 @@ func (m *Model) feedView() string {
 	for _, i := range visibleCards(lines, f.selected, height) {
 		body = append(body, lines[i]...)
 	}
-	return m.pane("Feed", fmt.Sprintf("%s · %d posts", f.mode, f.total), body, m.feedHint())
-}
-
-// feedHint is the key legend of the feed pane.
-func (m *Model) feedHint() string {
-	hint := "j/k move · enter open · r react · b bookmark · c post · e edit · d delete · t tab · R reload · esc back"
-	if m.guest {
-		hint = "j/k move · enter open · t tab · R reload · g sign in · esc back"
+	count := fmt.Sprintf("%d posts", len(f.items))
+	if f.hasMore() {
+		count += "+"
 	}
-	return hint
+	return m.pane("Feed", f.mode.String()+" · "+count, body)
 }
 
 // renderPostCard renders one post as card lines.
@@ -428,12 +448,14 @@ func (m *Model) updateFeedMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		f.loaded = true
-		f.total = msg.page.Total
+		f.total = msg.total
+		f.cursor = msg.cursor
+		f.more = msg.more
 		if msg.first == 0 {
-			f.items = msg.page.Items
+			f.items = msg.posts
 			f.selected = min(f.selected, max(len(f.items)-1, 0))
 		} else {
-			f.items = append(f.items, msg.page.Items...)
+			f.items = append(f.items, msg.posts...)
 		}
 		m.clearBanner()
 		return m, nil
