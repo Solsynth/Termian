@@ -6,7 +6,6 @@ package hosted
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -23,9 +22,9 @@ import (
 	wishrecover "charm.land/wish/v2/recover"
 	gossh "golang.org/x/crypto/ssh"
 	"google.golang.org/grpc"
-	grpccreds "google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 
+	grpctls "src.solsynth.dev/sosys/lighthouse/shared/platform/grpctls"
 	gen "src.solsynth.dev/sosys/lighthouse/shared/proto"
 
 	"src.solsynth.dev/sosys/termian/internal/api"
@@ -56,10 +55,18 @@ type Config struct {
 	HostKeyPath string
 	// StargateGRPC is the address of Stargate's internal gRPC surface.
 	StargateGRPC string
-	// GRPCTLS enables TLS to Stargate. Fleet certificates are self-signed, so
-	// the certificate chain is not verified (the same convention the Go fleet
-	// uses).
+	// GRPCTLS enables TLS to Stargate.
 	GRPCTLS bool
+	// GRPCCAFile verifies Stargate's certificate. Empty skips verification,
+	// matching the fleet's self-signed default.
+	GRPCCAFile string
+	// GRPCCertFile and GRPCKeyFile identify this server to a Stargate that
+	// enforces mTLS.
+	GRPCCertFile string
+	GRPCKeyFile  string
+	// GRPCServerName overrides the name verified against Stargate's
+	// certificate. Empty uses the dial target's host.
+	GRPCServerName string
 	// ExchangeToken is the deployment's hosted exchange credential.
 	ExchangeToken string
 	// Purpose is echoed in Stargate's audit record, e.g. "termian-hosted".
@@ -97,7 +104,16 @@ func Serve(ctx context.Context, cfg Config, log *slog.Logger) error {
 
 	transport := insecure.NewCredentials()
 	if cfg.GRPCTLS {
-		transport = grpccreds.NewTLS(&tls.Config{InsecureSkipVerify: true}) //nolint:gosec // fleet certs are self-signed
+		creds, err := grpctls.Client(grpctls.Files{
+			CAFile:     cfg.GRPCCAFile,
+			CertFile:   cfg.GRPCCertFile,
+			KeyFile:    cfg.GRPCKeyFile,
+			ServerName: cfg.GRPCServerName,
+		})
+		if err != nil {
+			return fmt.Errorf("hosted: load Stargate gRPC TLS: %w", err)
+		}
+		transport = creds
 	}
 	conn, err := grpc.NewClient(cfg.StargateGRPC, grpc.WithTransportCredentials(transport))
 	if err != nil {

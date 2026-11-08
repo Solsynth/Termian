@@ -26,18 +26,22 @@ import (
 
 // options collects the server flags.
 type options struct {
-	server        string
-	clientID      string
-	configPath    string
-	timeout       time.Duration
-	attachments   string
-	chatHistory   int
-	listen        string
-	hostKey       string
-	stargateGRPC  string
-	grpcTLS       bool
-	exchangeToken string
-	purpose       string
+	server         string
+	clientID       string
+	configPath     string
+	timeout        time.Duration
+	attachments    string
+	chatHistory    int
+	listen         string
+	hostKey        string
+	stargateGRPC   string
+	grpcTLS        bool
+	grpcCA         string
+	grpcCert       string
+	grpcKey        string
+	grpcServerName string
+	exchangeToken  string
+	purpose        string
 }
 
 func main() {
@@ -83,7 +87,11 @@ func run() error {
 	pf.IntVar(&opts.chatHistory, "chat-history", 0, "messages kept per chat room")
 	pf.StringVar(&opts.listen, "listen", ":2222", "SSH listen address")
 	pf.StringVar(&opts.stargateGRPC, "stargate-grpc", "127.0.0.1:9090", "Stargate gRPC address for key validation")
-	pf.BoolVar(&opts.grpcTLS, "stargate-grpc-tls", false, "use TLS (self-signed certificates are not verified)")
+	pf.BoolVar(&opts.grpcTLS, "stargate-grpc-tls", false, "use TLS to Stargate")
+	pf.StringVar(&opts.grpcCA, "stargate-grpc-ca", "", "CA bundle verifying Stargate's gRPC certificate (empty skips verification)")
+	pf.StringVar(&opts.grpcCert, "stargate-grpc-cert", "", "client certificate for Stargate gRPC mTLS")
+	pf.StringVar(&opts.grpcKey, "stargate-grpc-key", "", "client key for Stargate gRPC mTLS")
+	pf.StringVar(&opts.grpcServerName, "stargate-grpc-server-name", "", "override the name verified against Stargate's certificate")
 	pf.StringVar(&opts.exchangeToken, "exchange-token", os.Getenv("TERMIAN_EXCHANGE_TOKEN"), "hosted exchange service token (also TERMIAN_EXCHANGE_TOKEN)")
 	pf.StringVar(&opts.purpose, "purpose", hosted.DefaultPurpose, "purpose echoed in Stargate's audit record")
 	pf.StringVar(&opts.hostKey, "host-key", "", "SSH host key path (default $XDG_STATE_HOME/termian/host_ed25519)")
@@ -125,18 +133,22 @@ func serve(ctx context.Context, opts options) error {
 	logger.Info("hosted Termian starting",
 		"listen", opts.listen, "server", base.String(), "grpc", opts.stargateGRPC)
 	return hosted.Serve(ctx, hosted.Config{
-		Listen:        opts.listen,
-		HostKeyPath:   hostKey,
-		StargateGRPC:  opts.stargateGRPC,
-		GRPCTLS:       opts.grpcTLS,
-		ExchangeToken: opts.exchangeToken,
-		Purpose:       opts.purpose,
-		APIBase:       base.String(),
-		ClientID:      cfg.ClientID,
-		Scope:         cfg.Scope,
-		Timeout:       opts.timeout,
-		Version:       version.Version,
-		Attachments:   cfg.Attachments,
-		ChatHistory:   cfg.ChatHistory,
+		Listen:         opts.listen,
+		HostKeyPath:    hostKey,
+		StargateGRPC:   opts.stargateGRPC,
+		GRPCTLS:        opts.grpcTLS,
+		GRPCCAFile:     opts.grpcCA,
+		GRPCCertFile:   opts.grpcCert,
+		GRPCKeyFile:    opts.grpcKey,
+		GRPCServerName: opts.grpcServerName,
+		ExchangeToken:  opts.exchangeToken,
+		Purpose:        opts.purpose,
+		APIBase:        base.String(),
+		ClientID:       cfg.ClientID,
+		Scope:          cfg.Scope,
+		Timeout:        opts.timeout,
+		Version:        version.Version,
+		Attachments:    cfg.Attachments,
+		ChatHistory:    cfg.ChatHistory,
 	}, logger)
 }

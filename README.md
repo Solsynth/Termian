@@ -235,10 +235,17 @@ Hosted flags:
 |---|---|---|
 | `--listen` | `:2222` | SSH listen address |
 | `--stargate-grpc` | `127.0.0.1:9090` | Stargate's internal gRPC address |
-| `--stargate-grpc-tls` | off | TLS to Stargate; fleet certificates are self-signed and not verified |
+| `--stargate-grpc-tls` | off | TLS to Stargate |
+| `--stargate-grpc-ca` | empty | CA bundle verifying Stargate; empty skips verification |
+| `--stargate-grpc-cert` | empty | client certificate for a Stargate enforcing mTLS |
+| `--stargate-grpc-key` | empty | client key paired with `--stargate-grpc-cert` |
+| `--stargate-grpc-server-name` | empty | verified certificate name; defaults to the dial host |
 | `--exchange-token` | `$TERMIAN_EXCHANGE_TOKEN` | Hosted exchange secret; required |
 | `--purpose` | `termian-hosted` | Purpose echoed in Stargate's audit log |
 | `--host-key` | `$XDG_STATE_HOME/termian/host_ed25519` | SSH host key; generated when missing |
+
+Fleet deployments enable `--stargate-grpc-tls` and present the shared client
+certificate; Stargate's gRPC listener enforces mTLS when `clientCAFile` is set.
 
 `--server`, `--client-id`, `--attachments`, `--chat-history` and `--timeout`
 apply to hosted sessions too. The attachment policy defaults to `preview`
