@@ -112,6 +112,8 @@ type Post struct {
 	RepliedPostID *string         `json:"replied_post_id"`
 	ChainedPostID *string         `json:"chained_post_id"`
 	Attachments   []CloudFile     `json:"attachments"`
+	Tags          []PostTag       `json:"tags"`
+	Meta          map[string]any  `json:"meta"`
 	Reactions     map[string]int  `json:"reactions_count"`
 	ReactionsMade map[string]bool `json:"reactions_made"`
 	RepliesCount  int             `json:"replies_count"`
@@ -158,14 +160,70 @@ func (p Post) When() time.Time {
 	return time.Time{}
 }
 
+// Post types understood by Sphere.
+const (
+	PostTypeStatus  = 0
+	PostTypeArticle = 1
+	PostTypeBlog    = 2
+)
+
+// PostTypeLabel names a post type.
+func PostTypeLabel(kind int) string {
+	switch kind {
+	case PostTypeArticle:
+		return "article"
+	case PostTypeBlog:
+		return "blog"
+	default:
+		return "status"
+	}
+}
+
+// Visibility values understood by Sphere.
+const (
+	VisibilityPublic      = 0
+	VisibilityFriends     = 1
+	VisibilityUnlisted    = 2
+	VisibilityPrivate     = 3
+	VisibilityCloseFriend = 4
+	VisibilityQuitePublic = 5
+)
+
+// VisibilityLabel names a visibility level.
+func VisibilityLabel(level int) string {
+	switch level {
+	case VisibilityFriends:
+		return "friends"
+	case VisibilityUnlisted:
+		return "unlisted"
+	case VisibilityPrivate:
+		return "private"
+	case VisibilityCloseFriend:
+		return "close friends"
+	case VisibilityQuitePublic:
+		return "quite public"
+	default:
+		return "public"
+	}
+}
+
 // NewPost is the payload of POST /sphere/posts.
 type NewPost struct {
-	Content   string `json:"content"`
-	Publisher string `json:"-"`
-	ReplyTo   string `json:"-"`
-	Title     string `json:"-"`
+	Content     string
+	Title       string
+	Description string
+	Language    string
+	Slug        string
+	// Type is a PostType constant.
+	Type int
 	// Visibility is 0 for a public post.
 	Visibility int
+	// Tags are tag slugs.
+	Tags []string
+	// Attachments are Drive file IDs.
+	Attachments []string
+	Publisher   string
+	ReplyTo     string
 }
 
 // FileURL is the public download URL of a Drive file. The endpoint redirects to
@@ -234,12 +292,31 @@ func (c *Client) Replies(ctx context.Context, id string, offset, take int) (Page
 // CreatePost publishes a post or a reply. A reply does not need a publisher:
 // the server answers as the account's primary publisher.
 func (c *Client) CreatePost(ctx context.Context, req NewPost) (Post, error) {
-	body := map[string]any{"content": req.Content, "visibility": req.Visibility}
+	body := map[string]any{
+		"content":    req.Content,
+		"visibility": req.Visibility,
+		"type":       req.Type,
+	}
 	if req.ReplyTo != "" {
 		body["replied_post_id"] = req.ReplyTo
 	}
 	if req.Title != "" {
 		body["title"] = req.Title
+	}
+	if req.Description != "" {
+		body["description"] = req.Description
+	}
+	if req.Language != "" {
+		body["language"] = req.Language
+	}
+	if req.Slug != "" {
+		body["slug"] = req.Slug
+	}
+	if len(req.Tags) > 0 {
+		body["tags"] = req.Tags
+	}
+	if len(req.Attachments) > 0 {
+		body["attachments"] = req.Attachments
 	}
 	path := "/sphere/posts"
 	if req.Publisher != "" {
@@ -255,7 +332,12 @@ type PostPatch struct {
 	Content     *string
 	Title       *string
 	Description *string
+	Language    *string
+	Slug        *string
+	Type        *int
 	Visibility  *int
+	Tags        *[]string
+	Attachments *[]string
 	// Publisher is the publisher the edit is made as; empty means the
 	// account's default publisher.
 	Publisher string
@@ -273,8 +355,23 @@ func (c *Client) UpdatePost(ctx context.Context, id string, patch PostPatch) (Po
 	if patch.Description != nil {
 		body["description"] = *patch.Description
 	}
+	if patch.Language != nil {
+		body["language"] = *patch.Language
+	}
+	if patch.Slug != nil {
+		body["slug"] = *patch.Slug
+	}
+	if patch.Type != nil {
+		body["type"] = *patch.Type
+	}
 	if patch.Visibility != nil {
 		body["visibility"] = *patch.Visibility
+	}
+	if patch.Tags != nil {
+		body["tags"] = *patch.Tags
+	}
+	if patch.Attachments != nil {
+		body["attachments"] = *patch.Attachments
 	}
 	path := "/sphere/posts/" + id
 	if patch.Publisher != "" {

@@ -65,12 +65,39 @@ type ChatGroup struct {
 
 // ChatMember is the sender of a message.
 type ChatMember struct {
-	ID        string    `json:"id"`
-	RoomID    string    `json:"chat_room_id"`
-	AccountID string    `json:"account_id"`
-	Nick      *string   `json:"nick"`
-	Account   *ChatUser `json:"account"`
-	JoinedAt  time.Time `json:"joined_at"`
+	ID        string      `json:"id"`
+	RoomID    string      `json:"chat_room_id"`
+	AccountID string      `json:"account_id"`
+	Nick      *string     `json:"nick"`
+	Account   *ChatUser   `json:"account"`
+	Status    *ChatStatus `json:"status"`
+	JoinedAt  time.Time   `json:"joined_at"`
+}
+
+// ChatStatus is an account's live presence, as embedded in a chat member.
+type ChatStatus struct {
+	IsOnline bool   `json:"is_online"`
+	IsIdle   bool   `json:"is_idle"`
+	Label    string `json:"label"`
+}
+
+// Online reports whether the member is currently connected.
+func (m ChatMember) Online() bool {
+	return m.Status != nil && m.Status.IsOnline
+}
+
+// StatusLabel names the presence state for a nicklist.
+func (m ChatMember) StatusLabel() string {
+	switch {
+	case m.Status == nil:
+		return "offline"
+	case m.Status.IsOnline && m.Status.IsIdle:
+		return "idle"
+	case m.Status.IsOnline:
+		return "online"
+	default:
+		return "offline"
+	}
 }
 
 // ChatUser is the account embedded in a member.

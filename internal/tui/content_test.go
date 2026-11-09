@@ -30,6 +30,11 @@ type fakeContent struct {
 	messages  map[string][]api.ChatMessage
 	members   map[string][]api.ChatMember
 
+	notifications []api.Notification
+	preferences   []api.NotificationPreference
+	uploads       []string
+	created       []api.NewPost
+	updated       []api.PostPatch
 	// calls records the write calls, in order.
 	calls []string
 	// reactions counts toggles per post, so a test can assert the toggle
@@ -136,10 +141,18 @@ func (f *fakeContent) CreatePost(_ context.Context, req api.NewPost) (api.Post, 
 		return api.Post{}, f.failWrite
 	}
 	f.calls = append(f.calls, "create")
+	f.created = append(f.created, req)
 	post := api.Post{
-		ID:        "created-1",
-		Content:   ptr(req.Content),
-		Publisher: &api.Publisher{Name: "alice", Nick: "Alice"},
+		ID:          "created-1",
+		Content:     ptr(req.Content),
+		Title:       ptr(req.Title),
+		Description: ptr(req.Description),
+		Type:        req.Type,
+		Visibility:  req.Visibility,
+		Publisher:   &api.Publisher{Name: "alice", Nick: "Alice"},
+	}
+	for _, tag := range req.Tags {
+		post.Tags = append(post.Tags, api.PostTag{Slug: tag, Name: tag})
 	}
 	if req.ReplyTo != "" {
 		post.RepliedPostID = ptr(req.ReplyTo)
@@ -229,8 +242,21 @@ func (f *fakeContent) UpdatePost(_ context.Context, id string, patch api.PostPat
 	if !ok {
 		return api.Post{}, errors.New("post not found")
 	}
+	f.updated = append(f.updated, patch)
 	if patch.Content != nil {
 		post.Content = patch.Content
+	}
+	if patch.Title != nil {
+		post.Title = patch.Title
+	}
+	if patch.Type != nil {
+		post.Type = *patch.Type
+	}
+	if patch.Tags != nil {
+		post.Tags = nil
+		for _, tag := range *patch.Tags {
+			post.Tags = append(post.Tags, api.PostTag{Slug: tag, Name: tag})
+		}
 	}
 	f.posts[id] = post
 	for i := range f.feed {
@@ -336,6 +362,98 @@ func (f *fakeContent) ToggleChatReaction(_ context.Context, roomID, messageID, s
 	}
 	f.calls = append(f.calls, "chatreact:"+messageID+":"+symbol)
 	return true, nil
+}
+
+// Notifications returns the scripted activity stream.
+func (f *fakeContent) Notifications(context.Context, int, int) (api.Page[api.Notification], error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return api.Page[api.Notification]{Items: f.notifications, Total: len(f.notifications)}, nil
+}
+
+// UnreadNotificationCount counts the scripted unread notifications.
+func (f *fakeContent) UnreadNotificationCount(context.Context) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	count := 0
+	for _, item := range f.notifications {
+		if item.Unread() {
+			count++
+		}
+	}
+	return count, nil
+}
+
+// MarkNotificationRead records a read receipt.
+func (f *fakeContent) MarkNotificationRead(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failWrite != nil {
+		return f.failWrite
+	}
+	f.calls = append(f.calls, "notifread:"+id)
+	return nil
+}
+
+// MarkAllNotificationsRead records a mark-all.
+func (f *fakeContent) MarkAllNotificationsRead(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failWrite != nil {
+		return f.failWrite
+	}
+	f.calls = append(f.calls, "notifread:all")
+	return nil
+}
+
+// DeleteNotification records a removal.
+func (f *fakeContent) DeleteNotification(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failWrite != nil {
+		return f.failWrite
+	}
+	f.calls = append(f.calls, "notifdelete:"+id)
+	return nil
+}
+
+// NotificationPreferences returns the scripted preferences.
+func (f *fakeContent) NotificationPreferences(context.Context) ([]api.NotificationPreference, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]api.NotificationPreference(nil), f.preferences...), nil
+}
+
+// SetNotificationPreference records a preference write.
+func (f *fakeContent) SetNotificationPreference(_ context.Context, topic string, level int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failWrite != nil {
+		return f.failWrite
+	}
+	f.calls = append(f.calls, "pref:"+topic)
+	f.preferences = append(f.preferences, api.NotificationPreference{Topic: topic, Preference: level})
+	return nil
+}
+
+// DeleteNotificationPreference records a reset.
+func (f *fakeContent) DeleteNotificationPreference(_ context.Context, topic string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "prefdelete:"+topic)
+	return nil
+}
+
+// UploadFile records an upload and returns the file metadata.
+func (f *fakeContent) UploadFile(_ context.Context, name string, data []byte, contentType string) (api.CloudFile, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failWrite != nil {
+		return api.CloudFile{}, f.failWrite
+	}
+	f.calls = append(f.calls, "upload:"+name)
+	f.uploads = append(f.uploads, name)
+	return api.CloudFile{ID: "file-" + name, Name: name, MimeType: contentType, Size: int64(len(data))}, nil
 }
 
 // called reports whether a recorded call matches prefix.

@@ -51,7 +51,7 @@ moves to the session shell.
 | `termian refresh` | Rotates the access token and prints the new expiry |
 | `termian feed` | Lists the ranked timeline (`--mode`, `--cursor`); works with or without a session |
 | `termian post <id>` | Prints a post and its replies |
-| `termian publish` | Publishes a post (`--content`, `--file -`, `--publisher`, `--title`) |
+| `termian publish` | Publishes a status, article or blog link (`--content`, `--file -`, `--type`, `--title`, `--description`, `--publisher`, `--tag`, `--attach`, `--visibility`, `--language`, `--slug`) |
 | `termian reply <id>` | Replies to a post |
 | `termian react <id>` | Toggles a reaction (`--symbol`, default `heart`) |
 | `termian save <id>` | Bookmarks a post; `--remove` drops the bookmark |
@@ -303,13 +303,14 @@ the screens are testable without a server.
 | Pane | Keys |
 |---|---|
 | Login | `g` browse as guest, `p` password login, `c` copy code, `o` open browser, `esc` quit |
-| Session shell | `f` timeline, `b` bookmarks, `c` chats, `n` new post, `r` refresh, `l` logout, `q` quit |
+| Session shell / Profile | `j`/`k` select a publisher or notification topic, `enter` apply, `r` refresh, `f` timeline, `b` bookmarks, `c` chats, `n` new post, `l` logout |
+| Notifications | `j`/`k` select, `enter` open the post or link, `a` mark all read, `d` delete, `R` reload, `esc` back |
 | Any content pane | `tab` next section, `shift+tab` previous section |
 | Feed | `j`/`k` move, `G` last, `enter` open, `r` react, `b` bookmark, `t` timeline/bookmarks, `c` post, `e` edit, `d` delete, `R` reload, `esc` back |
 | Post | `j`/`k` move, `enter` open a reply, `r` react, `b` bookmark, `c` reply, `e` edit, `d` delete, `o` open attachment, `p` preview, `R` reload, `esc` back |
 | Chats | `j`/`k` move, `enter` step into the conversation, `i` write, `R` reload, `tab` sections, `esc` back |
 | Chat room | `j`/`k` move, `k` at the top pages in older history, `g`/`G` jump to either end, `r` react, `i` write, `o` open attachment, `h` back to the room list |
-| Composer | `ctrl+d` post (or save, when editing), `alt+enter` newline, `esc` cancel |
+| Composer | `tab`/`shift+tab` fields, `ctrl+d` publish, `ctrl+p` publisher, `ctrl+t` status/article/blog, `ctrl+v` visibility, `ctrl+o` load local markdown as an article, `ctrl+a` attach a file, `alt+enter` newline, `esc` cancel |
 | Confirmation | `y` confirm, `n`/`esc` cancel |
 
 Write keys are refused locally when browsing as a guest: the status line asks for
@@ -335,16 +336,46 @@ previews are cached for the session.
 The browsing panes share one workspace, switched with `tab`: **timeline**,
 **chats**, **bookmarks**. The pane header names the active list.
 
-Chat is an IRC-style workspace in three columns: rooms on the left (only the
-room name and the date of its last message), the transcript in the middle as
-`time <nick> text` lines, and the room's nicklist on the right. The nicklist is
-hidden on narrow terminals and never shows the signed-in account. The room
-column owns the keys until `enter` steps into the conversation; `h` returns.
+The signed-in shell also exposes **notifications** (`3`) and a **profile/settings**
+page (`4`). Notifications mirror Ring: topic, title, body, action link and an
+unread dot, with `a` to mark everything read and `d` to delete. `enter` follows
+the action link: post links open the post pane, everything else goes to the
+system browser.
+
+The profile page shows the account id, role, perks, locale, activation date,
+level/XP, publishers, notification topics and the live session card. `enter` on
+a publisher makes it the composer default; `enter` on a notification topic
+cycles `normal → silent → reject` and writes the preference to Ring.
+
+Chat is an IRC-style workspace in three columns: rooms on the left, the
+transcript in the middle as `time <nick> text` lines, and the room's nicklist on
+the right. The active column is labelled `rooms ◂` or `conversation ◂` and the
+header names the focus, so `j`/`k` scope is explicit. Rooms with unread messages
+carry a `[*]` marker, and members show `●` (online), `◐` (idle) or `○`
+(offline). The nicklist is hidden on narrow terminals and never shows the
+signed-in account.
 
 Chat scrollback pages backwards through the room history 50 messages at a time
 and keeps at most `chat_history` messages per room. System events (call presence,
 attachment finalisation, reaction receipts) are filtered out of the transcript,
 so the offset tracks rows read from the server rather than visible messages.
+
+## Realtime and composer
+
+When a session exists the TUI opens the Solian websocket gateway
+(`/ws?namespace=dev.solsynth.solian`) with the bearer token. `notifications.new`
+and `messages.new` frames update the badge, the notification list and the open
+chat immediately; each frame with an `_ack_id` is acknowledged, new connections
+request `session.resume`, and the client reconnects with backoff. The footer
+shows `● live` while the socket is open.
+
+The composer supports three post types: status, article and blog link. `ctrl+o`
+loads a local Markdown file as an article and fills the title from the first
+heading (and the description from the first paragraph); `ctrl+a` uploads a local
+file to Drive and attaches it (20 MiB direct-upload limit); `ctrl+p` cycles
+publishers; `ctrl+t` cycles the type; `ctrl+v` cycles visibility. Titles,
+descriptions and comma-separated tags are part of the publish and edit payloads.
+Blog links must be absolute `http(s)` URLs.
 
 ## Development
 

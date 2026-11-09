@@ -314,6 +314,7 @@ func (g *gateway) program(sess ssh.Session) (tea.Model, []tea.ProgramOption) {
 		Ctx:         sess.Context(),
 		API:         client,
 		Content:     client,
+		Realtime:    api.NewRealtime(client, tokens),
 		Tokens:      tokens,
 		Store:       store,
 		Server:      g.cfg.APIBase,

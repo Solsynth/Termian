@@ -149,6 +149,12 @@ func (f *fakeServer) handle(w http.ResponseWriter, r *http.Request) {
 			{"id":"p2","type":"posts.new.replies","data":{"id":"p2","content":"second post","publisher":{"id":"u2","name":"bob","nick":"Bob"}}}
 		],"next_cursor":"2026-11-07T00:00:00Z","mode":"personalized"}`)
 
+	case path == "/drive/files/upload/direct" && r.Method == http.MethodPost:
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			f.t.Errorf("parse upload: %v", err)
+		}
+		io.WriteString(w, `{"id":"file-1","name":"notes.md","mime_type":"text/markdown","size":8}`)
+
 	case path == "/sphere/posts" && r.Method == http.MethodPost:
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)

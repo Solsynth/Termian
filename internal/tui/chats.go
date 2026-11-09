@@ -43,6 +43,13 @@ func (c *chatsModel) unread(id string) int {
 	return 0
 }
 
+// hasUnread reports whether a room carries an unread marker, including
+// mention-only rooms whose count is zero.
+func (c *chatsModel) hasUnread(id string) bool {
+	summary, ok := c.summary[id]
+	return ok && (summary.UnreadCount > 0 || summary.HasUnread)
+}
+
 // roomsLoadedMsg carries the room list and its unread summary.
 type roomsLoadedMsg struct {
 	rooms   api.ChatRooms
@@ -77,14 +84,23 @@ func (m *Model) chatsView() string {
 	c := &m.Chats
 	rowsHeight := max(1, m.bodyHeight()-1)
 
-	var left []string
+	focusLabel := "rooms focused"
+	if c.focused {
+		focusLabel = "conversation focused"
+	}
+
+	left := []string{m.Styles.Accent.Bold(true).Render("rooms ◂")}
+	if c.focused {
+		left[0] = m.Styles.Label.Render("rooms")
+	}
+	left = append(left, "")
 	switch {
 	case !c.loaded:
 		left = append(left, m.Spinner.View()+" "+m.Styles.Muted.Render("loading rooms…"))
 	case len(c.rooms) == 0:
 		left = append(left, m.Styles.Muted.Render("no chat rooms yet"))
 	default:
-		visible := max(rowsHeight, 1)
+		visible := max(rowsHeight-2, 1)
 		start, end := scrollWindow(c.selected, c.selected-visible/2, len(c.rooms), visible)
 		for i := start; i < end; i++ {
 			left = append(left, m.renderRoomRow(c.rooms[i], m.listWidth(), i == c.selected)...)
@@ -99,6 +115,7 @@ func (m *Model) chatsView() string {
 	if total > 0 {
 		right += fmt.Sprintf(" · %d unread", total)
 	}
+	right += " · " + focusLabel
 	title := "Chats"
 	if m.Chat.room.ID != "" {
 		prefix := "#"
@@ -147,18 +164,23 @@ func (m *Model) chatColumn(height int) []string {
 		}
 	}
 
-	composer := 0
+	header := m.Styles.Label.Render("conversation")
+	if m.Chats.focused {
+		header = m.Styles.Accent.Bold(true).Render("conversation ◂")
+	}
+
+	composer := 2
 	switch {
 	case c.typing && c.sending:
-		composer = 2
+		composer = 4
 	case c.typing:
-		composer = 1
+		composer = 3
 	case c.lastErr != "":
-		composer = 2
+		composer = 4
 	}
-	logHeight := max(height-composer, 3)
+	logHeight := max(height-composer-2, 3)
 
-	var out []string
+	out := []string{header, ""}
 	switch {
 	case !c.loaded:
 		out = append(out, m.Spinner.View()+" "+m.Styles.Muted.Render("loading messages…"))
@@ -193,19 +215,23 @@ func (m *Model) detailWidth() int {
 	return max(width, 20)
 }
 
-// renderRoomRow renders one room as one IRC-style line: the room name and
-// the last message date.
+// renderRoomRow renders one room as one IRC-style line: unread marker, room
+// name and the last message date.
 func (m *Model) renderRoomRow(room api.ChatRoom, width int, selected bool) []string {
 	marker := "  "
 	if selected {
 		marker = m.Styles.Accent.Render("▸ ")
 	}
 
-	title := truncate(m.roomTitle(room), max(width-4, 8))
-	line := marker + m.Styles.Bold.Render(title)
+	unread := ""
+	if m.Chats.hasUnread(room.ID) {
+		unread = m.Styles.Accent.Render("[*] ")
+	}
+	title := truncate(m.roomTitle(room), max(width-4-ansi.StringWidth(unread), 8))
+	line := marker + unread + m.Styles.Bold.Render(title)
 
 	if stamp := m.roomStamp(room); stamp != "" {
-		gap := width - 2 - ansi.StringWidth(title) - ansi.StringWidth(stamp)
+		gap := width - 2 - ansi.StringWidth(unread) - ansi.StringWidth(title) - ansi.StringWidth(stamp)
 		if gap < 1 {
 			gap = 1
 		}
@@ -292,8 +318,15 @@ func (m *Model) memberColumn(height int) []string {
 			if m.isSelf(member) {
 				continue
 			}
-			name := truncate(member.DisplayName(), max(m.membersWidth()-2, 6))
-			out = append(out, m.Styles.Foreground.Render(name))
+			name := truncate(member.DisplayName(), max(m.membersWidth()-4, 6))
+			dot := m.Styles.Muted.Render("○ ")
+			if member.Online() {
+				dot = m.Styles.Success.Render("● ")
+				if member.Status != nil && member.Status.IsIdle {
+					dot = m.Styles.Muted.Render("◐ ")
+				}
+			}
+			out = append(out, dot+m.Styles.Foreground.Render(name))
 		}
 	}
 	return clipLines(out, height)
@@ -335,6 +368,9 @@ func (m *Model) openRoom() tea.Cmd {
 	m.Chat.room = *room
 	m.showScreen(ScreenChats)
 	m.Chats.focused = false
+	if m.Deps.Realtime != nil {
+		m.Deps.Realtime.SubscribeRoom(room.ID)
+	}
 	return tea.Batch(m.loadMessagesCmd(room.ID), m.loadMembersCmd(room.ID))
 }
 

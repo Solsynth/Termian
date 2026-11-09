@@ -60,6 +60,18 @@ func (f Factor) SecretIsOpaque() bool {
 	return f.Type == FactorPassword || f.Type == FactorPIN
 }
 
+// KindLabel names the publisher kind.
+func (p Publisher) KindLabel() string {
+	switch p.Type {
+	case 1:
+		return "organization"
+	case 2:
+		return "fediverse"
+	default:
+		return "individual"
+	}
+}
+
 // Label is the human name of the factor.
 func (f Factor) Label() string {
 	switch f.Type {
@@ -143,4 +155,100 @@ type Profile struct {
 	Level      int        `json:"level"`
 	Experience int        `json:"experience"`
 	CreatedAt  *time.Time `json:"created_at,omitempty"`
+}
+
+// PostTag is a tag attached to a post.
+type PostTag struct {
+	ID          string `json:"id"`
+	Slug        string `json:"slug"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+// Display prefers the human name, then the slug with a hash.
+func (t PostTag) Display() string {
+	if t.Name != "" {
+		return t.Name
+	}
+	if t.Slug != "" {
+		return "#" + t.Slug
+	}
+	return ""
+}
+
+// Notification is one Ring notification (GET /metoer/notifications).
+type Notification struct {
+	ID        string         `json:"id"`
+	AppID     string         `json:"app_id"`
+	Topic     string         `json:"topic"`
+	Title     string         `json:"title"`
+	Subtitle  string         `json:"subtitle"`
+	Content   string         `json:"content"`
+	Meta      map[string]any `json:"meta"`
+	ViewedAt  *time.Time     `json:"viewed_at"`
+	AccountID string         `json:"account_id"`
+	CreatedAt time.Time      `json:"created_at"`
+}
+
+// Body is the notification's message text.
+func (n Notification) Body() string { return n.Content }
+
+// Unread reports whether the notification has never been viewed.
+func (n Notification) Unread() bool { return n.ViewedAt == nil }
+
+// ActionURI is the deep link the notification carries, if any.
+func (n Notification) ActionURI() string {
+	if n.Meta == nil {
+		return ""
+	}
+	uri, _ := n.Meta["action_uri"].(string)
+	return uri
+}
+
+// Preference levels for a notification topic.
+const (
+	NotificationPreferenceNormal = 0
+	NotificationPreferenceSilent = 1
+	NotificationPreferenceReject = 2
+)
+
+// NotificationPreference is the delivery level of one notification topic.
+type NotificationPreference struct {
+	ID         string `json:"id"`
+	AccountID  string `json:"account_id"`
+	Topic      string `json:"topic"`
+	Preference int    `json:"preference"`
+}
+
+// NotificationPreferenceLabel names a preference level.
+func NotificationPreferenceLabel(level int) string {
+	switch level {
+	case NotificationPreferenceSilent:
+		return "silent"
+	case NotificationPreferenceReject:
+		return "reject"
+	default:
+		return "normal"
+	}
+}
+
+// NotificationTopic is one topic the account can tune.
+type NotificationTopic struct {
+	Topic       string
+	Description string
+}
+
+// DefaultNotificationTopics mirrors the Ring topics a Solian client knows.
+var DefaultNotificationTopics = []NotificationTopic{
+	{Topic: "posts.mentions.new", Description: "Post mentions"},
+	{Topic: "post.replies", Description: "Post replies"},
+	{Topic: "posts.reactions.new", Description: "New reactions"},
+	{Topic: "posts.awards.new", Description: "Post awards"},
+	{Topic: "subscriptions.discontinued_in_app", Description: "Subscription discontinued"},
+	{Topic: "subscriptions.begun", Description: "Subscription started"},
+	{Topic: "subscriptions.orders", Description: "Provider orders"},
+	{Topic: "gifts.claimed", Description: "Gift claimed"},
+	{Topic: "wallets.transactions", Description: "Wallet transactions"},
+	{Topic: "auth.verification", Description: "Auth verification"},
+	{Topic: "invites.realms", Description: "Realm invites"},
 }

@@ -318,6 +318,7 @@ func (a *app) runTUI(ctx context.Context) error {
 		Ctx:         ctx,
 		API:         a.client,
 		Content:     a.client,
+		Realtime:    api.NewRealtime(a.client, a.tokens),
 		Tokens:      a.tokens,
 		Store:       a.store,
 		Server:      a.cfg.Server,

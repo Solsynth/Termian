@@ -1,5 +1,7 @@
 // Package tui is the interactive Termian front end: a Bubble Tea program with a
-// device-flow login pane, a password/TOTP challenge pane and a session shell.
+// device-flow login pane, a password/TOTP challenge pane, a session shell with
+// timeline, notifications, profile/settings and chat panes, and a live websocket
+// feed for pushed messages and notifications.
 package tui
 
 import (
@@ -127,6 +129,15 @@ type ContentAPI interface {
 	EditChatMessage(context.Context, string, string, string) (api.ChatMessage, error)
 	DeleteChatMessage(context.Context, string, string) error
 	ToggleChatReaction(context.Context, string, string, string) (bool, error)
+	Notifications(context.Context, int, int) (api.Page[api.Notification], error)
+	UnreadNotificationCount(context.Context) (int, error)
+	MarkNotificationRead(context.Context, string) error
+	MarkAllNotificationsRead(context.Context) error
+	DeleteNotification(context.Context, string) error
+	NotificationPreferences(context.Context) ([]api.NotificationPreference, error)
+	SetNotificationPreference(context.Context, string, int) error
+	DeleteNotificationPreference(context.Context, string) error
+	UploadFile(context.Context, string, []byte, string) (api.CloudFile, error)
 }
 
 // commandTimeout bounds every asynchronous API call made from the UI.
@@ -158,6 +169,17 @@ type Deps struct {
 	ChatHistory int
 	// PollInterval overrides the server device poll interval (tests).
 	PollInterval time.Duration
+	// Realtime is the websocket gateway; nil disables live updates.
+	Realtime RealtimeAPI
+}
+
+// RealtimeAPI is the websocket surface the UI consumes.
+type RealtimeAPI interface {
+	Run(context.Context)
+	Events() <-chan api.Packet
+	SubscribeRoom(string)
+	UnsubscribeRoom(string)
+	Connected() bool
 }
 
 // Model is the root Bubble Tea model.
@@ -179,7 +201,9 @@ type Model struct {
 	Chat     chatModel
 	Compose  composeModel
 	Confirm  confirmModel
-	Deps     Deps
+	// Notifications is the Ring activity stream.
+	Notifications notificationsModel
+	Deps          Deps
 
 	// guest is set when the session is browsing without a session, so the
 	// write paths ask for a sign-in instead of failing at the server.
@@ -198,10 +222,13 @@ type Model struct {
 	// a consistent snapshot while the program goroutine updates it.
 	mu sync.Mutex
 
-	unreadChat    int
-	quickSwitch   bool
-	quickInput    string
-	quickSelected int
+	unreadChat          int
+	notificationsUnread int
+	defaultPublisher    string
+	realtimeStarted     bool
+	quickSwitch         bool
+	quickInput          string
+	quickSelected       int
 }
 
 // Snapshot is a consistent view of the model's state.
@@ -277,22 +304,23 @@ func NewModelWithScreen(deps Deps, screen Screen) *Model {
 	sp.Spinner = spinner.Dot
 
 	m := &Model{
-		Screen:   screen,
-		Dark:     true,
-		Spinner:  sp,
-		Deps:     deps,
-		Login:    newLoginModel(),
-		Home:     newHomeModel(),
-		Feed:     newFeedModel(),
-		Post:     newPostModel(),
-		Chats:    newChatsModel(),
-		Chat:     newChatModel(),
-		Compose:  newComposeModel(),
-		previews: map[string][]string{},
+		Screen:        screen,
+		Dark:          true,
+		Spinner:       sp,
+		Deps:          deps,
+		Login:         newLoginModel(),
+		Home:          newHomeModel(),
+		Feed:          newFeedModel(),
+		Post:          newPostModel(),
+		Chats:         newChatsModel(),
+		Chat:          newChatModel(),
+		Compose:       newComposeModel(),
+		Notifications: newNotificationsModel(),
+		previews:      map[string][]string{},
 	}
 	m.Styles = newStyles(m.Dark)
 	m.Password = newPasswordModel(m.Styles)
-	m.Compose.input.SetStyles(textareaStyles(m.Styles))
+	m.Compose.setStyles(m.Styles)
 	m.Chat.input.SetStyles(textareaStyles(m.Styles))
 	if screen == ScreenPassword {
 		m.Password.reset()
@@ -307,8 +335,12 @@ func (m *Model) Init() tea.Cmd {
 	case m.Screen == ScreenHome && m.Deps.Tokens != nil:
 		cmds = append(cmds, tea.Tick(time.Second, func(t time.Time) tea.Msg { return homeTickMsg{at: t} }))
 		cmds = append(cmds, m.fetchAccountCmd())
+		cmds = append(cmds, m.ensureRealtime())
+		cmds = append(cmds, m.notificationBadgeCmd())
 	case m.Screen == ScreenFeed, m.Screen == ScreenPost, m.Screen == ScreenChats:
 		cmds = append(cmds, m.initContentCmd())
+		cmds = append(cmds, m.ensureRealtime())
+		cmds = append(cmds, m.notificationBadgeCmd())
 	default:
 		cmds = append(cmds, m.startDeviceFlowCmd())
 	}
@@ -485,8 +517,16 @@ func (m *Model) renderHeader() string {
 	if width < 85 {
 		notifLabel = "[3] Notifs"
 	}
+	if m.notificationsUnread > 0 {
+		notifLabel = fmt.Sprintf("[3] Notifications (%d)", m.notificationsUnread)
+		if width < 85 {
+			notifLabel = fmt.Sprintf("[3] Notifs (%d)", m.notificationsUnread)
+		}
+	}
 	if notifsActive {
 		tabs = append(tabs, activeTabStyle.Render(notifLabel))
+	} else if m.notificationsUnread > 0 {
+		tabs = append(tabs, unreadDot+inactiveTabStyle.Render(notifLabel))
 	} else {
 		tabs = append(tabs, inactiveTabStyle.Render(notifLabel))
 	}
@@ -533,6 +573,14 @@ func (m *Model) renderFooter() string {
 		deviceTag = m.Deps.DeviceID
 	}
 	userTag := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#AAAAAA")).Render(fmt.Sprintf("%s (%s)", userHandle, deviceTag))
+	live := ""
+	if m.Deps.Realtime != nil && m.realtimeStarted {
+		if m.Deps.Realtime.Connected() {
+			live = sep + m.Styles.Success.Render("● live")
+		} else {
+			live = sep + m.Styles.Muted.Render("◌ connecting")
+		}
+	}
 
 	var status string
 	if m.Banner != "" {
@@ -548,32 +596,33 @@ func (m *Model) renderFooter() string {
 	case m.Confirm.active:
 		keybinds = "[y] Confirm │ [n] Cancel"
 	case m.Compose.active:
-		keybinds = "[Ctrl+D] Publish │ [Esc] Cancel"
+		keybinds = "[Ctrl+D] Publish │ [Ctrl+O] Markdown │ [Ctrl+A] Attach │ [Ctrl+P] Publisher │ [Esc] Cancel"
 	case (m.Screen == ScreenChats || m.Screen == ScreenChat) && m.Chat.typing:
 		keybinds = "[Enter] Send │ [Alt+Enter] Newline │ [Esc] Normal Mode"
 	case m.Screen == ScreenChats || m.Screen == ScreenChat:
 		if m.Chats.focused {
-			keybinds = "[1-4] Switch Screen │ [i] Focus Chat │ [Esc] Normal Mode │ [q] Quit"
+			keybinds = "[j/k] Messages │ [h/Esc] Rooms │ [i] Write │ [1-4] Screens │ [q] Quit"
 		} else {
-			keybinds = "[1-4] Switch Screen │ [Enter/i] Focus Chat │ [j/k] Drawer │ [q] Quit"
+			keybinds = "[j/k] Rooms │ [Enter/l] Open │ [1-4] Screens │ [q] Quit"
 		}
 	case m.Screen == ScreenFeed:
 		keybinds = "[1-4] Switch Screen │ [/] Search │ [c] New Post │ [q] Quit"
 	case m.Screen == ScreenPost:
 		keybinds = "[1-4] Switch Screen │ [j/k] Scroll │ [n] Reply │ [Esc] Feed │ [q] Quit"
 	case m.Screen == ScreenNotifications:
-		keybinds = "[1-4] Switch Screen │ [j/k] Scroll │ [q] Quit"
+		keybinds = "[j/k] Select │ [Enter] Open │ [a] Read All │ [d] Delete │ [R] Reload │ [q] Quit"
 	case m.Screen == ScreenHome:
-		keybinds = "[1-4] Switch Screen │ [r] Refresh │ [l] Logout │ [q] Quit"
+		keybinds = "[j/k] Settings │ [Enter] Change │ [r] Refresh │ [n] New Post │ [l] Logout"
 	default:
 		keybinds = "[1-4] Switch Screen │ [q] Quit"
 	}
 
 	keyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#888888"))
-	statusLine := userTag + sep + keyStyle.Render(keybinds)
+	statusLine := userTag + live
 	if status != "" {
 		statusLine += sep + status
 	}
+	statusLine += sep + keyStyle.Render(keybinds)
 
 	innerWidth := width - 4
 	if innerWidth < 1 {
@@ -738,7 +787,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Styles = newStyles(dark)
 			m.Password.applyStyles(m.Styles)
 			m.Chat.input.SetStyles(textareaStyles(m.Styles))
-			m.Compose.input.SetStyles(textareaStyles(m.Styles))
+			m.Compose.setStyles(m.Styles)
 		}
 		return m, nil
 
@@ -782,6 +831,10 @@ func (m *Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "3":
 			m.showScreen(ScreenNotifications)
+			if !m.Notifications.loaded {
+				m.Notifications.loaded = false
+				return m, m.loadNotificationsCmd()
+			}
 			return m, nil
 		case "4":
 			m.showScreen(ScreenHome)
@@ -822,7 +875,7 @@ func (m *Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case ScreenCompose:
 		return m.updateComposeKey(key)
 	case ScreenNotifications:
-		return m.updateNotificationsKey(key)
+		return m.updateNotificationKey(key)
 	}
 	return m, nil
 }
@@ -850,10 +903,40 @@ func (m *Model) handleScreenMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateChatsMsg(msg)
 	case messagesLoadedMsg, membersLoadedMsg, sentMessageMsg, chatReactionMsg:
 		return m.updateChatMsg(msg)
-	case postCreatedMsg, replyCreatedMsg, postUpdatedMsg:
+	case postCreatedMsg, replyCreatedMsg, postUpdatedMsg, markdownLoadedMsg, attachmentUploadedMsg, composePublishersMsg:
 		return m.updateComposeMsg(msg)
 	case postDeletedMsg:
 		m.applyPostDeleted(msg)
+		return m, nil
+	case notificationsLoadedMsg:
+		m.applyNotificationsLoaded(msg)
+		return m, nil
+	case notificationReadMsg:
+		m.applyNotificationRead(msg)
+		return m, nil
+	case notificationAllReadMsg:
+		m.applyAllNotificationsRead(msg)
+		return m, nil
+	case notificationDeletedMsg:
+		m.applyNotificationDeleted(msg)
+		return m, nil
+	case notificationBadgeMsg:
+		if msg.err == nil {
+			m.notificationsUnread = msg.count
+		}
+		return m, nil
+	case realtimeEventMsg:
+		return m.handleRealtimeEvent(msg)
+	case realtimeErrMsg:
+		if m.Banner == "" {
+			m.setBanner("live updates lost — reconnecting")
+		}
+		return m, nil
+	case profileExtrasMsg:
+		m.applyProfileExtras(msg)
+		return m, nil
+	case preferenceWrittenMsg:
+		m.applyPreferenceWritten(msg)
 		return m, nil
 	case previewLoadedMsg:
 		m.storePreview(msg)
@@ -1014,8 +1097,11 @@ func (m *Model) resetContentPanes() {
 	m.Chat.setWidth(m.detailWidth())
 	m.Compose = newComposeModel()
 	m.Compose.setWidth(m.contentWidth())
-	m.Compose.input.SetStyles(textareaStyles(m.Styles))
+	m.Compose.setStyles(m.Styles)
 	m.Chat.input.SetStyles(textareaStyles(m.Styles))
+	m.Notifications = newNotificationsModel()
+	m.notificationsUnread = 0
+	m.defaultPublisher = ""
 	m.postStack = nil
 }
 

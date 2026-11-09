@@ -185,6 +185,9 @@ func (m *Model) renderPostCard(post api.Post, width int, bodyLines int, selected
 		// A title is a headline, not prose: one truncated line.
 		out = append(out, "  "+m.Styles.Bold.Render(truncate(title, width-2)))
 	}
+	if meta := postMetaLine(post); meta != "" {
+		out = append(out, "  "+m.Styles.Muted.Render(meta))
+	}
 	wrapped := wrapText(body, width-2)
 	if bodyLines > 0 && len(wrapped) > bodyLines {
 		wrapped = append(wrapped[:bodyLines], m.Styles.Muted.Render("…"))
@@ -239,6 +242,20 @@ func postTitle(post api.Post) string {
 		return ""
 	}
 	return strings.TrimSpace(*post.Title)
+}
+
+// postMetaLine renders the type badge and tags of a post.
+func postMetaLine(post api.Post) string {
+	var parts []string
+	if post.Type != api.PostTypeStatus {
+		parts = append(parts, "["+api.PostTypeLabel(post.Type)+"]")
+	}
+	for _, tag := range post.Tags {
+		if label := tag.Display(); label != "" {
+			parts = append(parts, label)
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 // postStats renders the counters and reaction summary of a post.

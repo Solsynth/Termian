@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -12,11 +13,18 @@ import (
 	"src.solsynth.dev/sosys/termian/internal/credentials"
 )
 
-// homeModel is the post-login session shell.
+// homeModel is the post-login session shell and profile/settings page.
 type homeModel struct {
 	identity api.Identity
 	account  api.Account
 	loaded   bool
+
+	publishers       []api.Publisher
+	publishersLoaded bool
+	preferences      []api.NotificationPreference
+	prefsLoaded      bool
+	// setting indexes the interactive profile settings rows.
+	setting int
 
 	// refreshDisabled is set after a rejected rotation until the user signs in
 	// again.
@@ -52,22 +60,263 @@ func (h *homeModel) handleName() string {
 	return h.identity.Name
 }
 
-// homeView renders the signed-in profile with the session details.
+// homeView renders the signed-in profile, its publishers and the settings the
+// terminal can change.
 func (m *Model) homeView() string {
 	h := &m.Home
 	right := ""
 	var body []string
 	if !h.loaded {
 		body = append(body, m.Spinner.View()+" "+m.Styles.Muted.Render("loading account…"))
-	} else {
-		right = "@" + h.handleName()
-		body = append(body, m.Styles.Bold.Render(h.displayName()))
-		body = append(body, m.Styles.Foreground.Render(h.profileLine()))
-		body = append(body, "")
-		body = append(body, m.sessionLines()...)
-		body = append(body, "", m.Styles.Hint.Render("f feed · b bookmarks · c chats · n new post"))
+		return m.pane("Profile", right, body)
 	}
+
+	right = "@" + h.handleName()
+	body = append(body, m.Styles.Bold.Render(h.displayName()))
+	body = append(body, m.Styles.Foreground.Render(h.profileLine()))
+	body = append(body, "")
+	body = append(body, m.accountLines()...)
+	body = append(body, "")
+	body = append(body, m.publisherLines()...)
+	body = append(body, "")
+	body = append(body, m.preferenceLines()...)
+	body = append(body, "")
+	body = append(body, m.sessionLines()...)
+	body = append(body, "", m.Styles.Hint.Render("j/k select · enter change · r refresh · n new post · l sign out"))
 	return m.pane("Profile", right, body)
+}
+
+// accountLines renders the immutable account facts.
+func (m *Model) accountLines() []string {
+	h := &m.Home
+	out := []string{m.Styles.Label.Render("account")}
+	if h.account.ID != "" {
+		out = append(out, m.row("id", h.account.ID))
+	}
+	if h.identity.IsSuperuser {
+		out = append(out, m.row("role", "superuser"))
+	}
+	if h.account.PerkLevel > 0 {
+		out = append(out, m.row("perks", fmt.Sprintf("level %d", h.account.PerkLevel)))
+	}
+	if locale := strings.Trim(strings.Join([]string{h.identity.Language, h.identity.Region}, " · "), " ·"); locale != "" {
+		out = append(out, m.row("locale", locale))
+	}
+	if h.account.ActivatedAt != nil {
+		out = append(out, m.row("activated", h.account.ActivatedAt.Format("2006-01-02")))
+	}
+	return out
+}
+
+// publisherLines renders the publishers, with the composer default marked.
+func (m *Model) publisherLines() []string {
+	h := &m.Home
+	out := []string{m.Styles.Label.Render("publishers")}
+	switch {
+	case !h.publishersLoaded:
+		out = append(out, m.Spinner.View()+" "+m.Styles.Muted.Render("loading…"))
+	case len(h.publishers) == 0:
+		out = append(out, m.Styles.Muted.Render("no publishers"))
+	default:
+		for _, publisher := range h.publishers {
+			marker := "  "
+			if row, ok := m.profileSettingAt(h.setting); ok && row.publisher.Name == publisher.Name && publisher.Name != "" {
+				marker = m.Styles.Accent.Render("▸ ")
+			}
+			star := "  "
+			if publisher.Name == m.defaultPublisher {
+				star = m.Styles.Notice.Render("★ ")
+			}
+			line := marker + star + m.Styles.Foreground.Render("@"+publisher.Handle())
+			if publisher.Display() != publisher.Handle() {
+				line += " " + m.Styles.Muted.Render(publisher.Display())
+			}
+			line += " " + m.Styles.Muted.Render("("+publisher.KindLabel()+")")
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+// preferenceLines renders the notification topics with their delivery level.
+func (m *Model) preferenceLines() []string {
+	h := &m.Home
+	out := []string{m.Styles.Label.Render("notification settings")}
+	if !h.prefsLoaded {
+		out = append(out, m.Spinner.View()+" "+m.Styles.Muted.Render("loading…"))
+		return out
+	}
+	rows := m.profileSettings()
+	start, end := scrollWindow(h.setting, h.setting-2, len(rows), 5)
+	for i := start; i < end; i++ {
+		row := rows[i]
+		if row.kind != settingTopic {
+			continue
+		}
+		marker := "  "
+		if i == h.setting {
+			marker = m.Styles.Accent.Render("▸ ")
+		}
+		level := m.preferenceLevel(row.topic.Topic)
+		levelStyle := m.Styles.Foreground
+		switch level {
+		case api.NotificationPreferenceSilent:
+			levelStyle = m.Styles.Muted
+		case api.NotificationPreferenceReject:
+			levelStyle = m.Styles.Error
+		}
+		line := marker + m.Styles.Foreground.Render(truncate(row.topic.Description, 30))
+		line += "  " + levelStyle.Render(api.NotificationPreferenceLabel(level))
+		out = append(out, line)
+	}
+	return out
+}
+
+// settingKind distinguishes the two interactive setting families.
+type settingKind int
+
+const (
+	settingPublisher settingKind = iota
+	settingTopic
+)
+
+// profileSetting is one interactive row on the profile page.
+type profileSetting struct {
+	kind      settingKind
+	publisher api.Publisher
+	topic     api.NotificationTopic
+}
+
+// profileSettings lists publishers first, then notification topics.
+func (m *Model) profileSettings() []profileSetting {
+	rows := make([]profileSetting, 0, len(m.Home.publishers)+len(api.DefaultNotificationTopics))
+	for _, publisher := range m.Home.publishers {
+		rows = append(rows, profileSetting{kind: settingPublisher, publisher: publisher})
+	}
+	for _, topic := range api.DefaultNotificationTopics {
+		rows = append(rows, profileSetting{kind: settingTopic, topic: topic})
+	}
+	return rows
+}
+
+// profileSettingAt returns the setting at an index.
+func (m *Model) profileSettingAt(index int) (profileSetting, bool) {
+	rows := m.profileSettings()
+	if index < 0 || index >= len(rows) {
+		return profileSetting{}, false
+	}
+	return rows[index], true
+}
+
+// preferenceLevel reads the local delivery level for a topic.
+func (m *Model) preferenceLevel(topic string) int {
+	for _, pref := range m.Home.preferences {
+		if pref.Topic == topic {
+			return pref.Preference
+		}
+	}
+	return api.NotificationPreferenceNormal
+}
+
+// profileExtrasMsg carries the publishers and notification preferences.
+type profileExtrasMsg struct {
+	publishers  []api.Publisher
+	preferences []api.NotificationPreference
+	err         error
+}
+
+// loadProfileExtrasCmd loads the settings data shown on the profile page.
+func (m *Model) loadProfileExtrasCmd() tea.Cmd {
+	return m.withTimeout(func(ctx context.Context) tea.Msg {
+		if m.Deps.Content == nil {
+			return profileExtrasMsg{}
+		}
+		if err := m.requireSession(ctx); err != nil {
+			return profileExtrasMsg{err: err}
+		}
+		publishers, err := m.Deps.Content.Publishers(ctx)
+		if err != nil {
+			return profileExtrasMsg{err: err}
+		}
+		preferences, err := m.Deps.Content.NotificationPreferences(ctx)
+		return profileExtrasMsg{publishers: publishers, preferences: preferences, err: err}
+	})
+}
+
+// preferenceWrittenMsg reports a preference write.
+type preferenceWrittenMsg struct {
+	topic string
+	level int
+	err   error
+}
+
+// setPreferenceCmd writes a topic's delivery level.
+func (m *Model) setPreferenceCmd(topic string, level int) tea.Cmd {
+	return m.withTimeout(func(ctx context.Context) tea.Msg {
+		if err := m.requireSession(ctx); err != nil {
+			return preferenceWrittenMsg{topic: topic, level: level, err: err}
+		}
+		return preferenceWrittenMsg{topic: topic, level: level,
+			err: m.Deps.Content.SetNotificationPreference(ctx, topic, level)}
+	})
+}
+
+// applyProfileExtras stores the loaded settings data.
+func (m *Model) applyProfileExtras(msg profileExtrasMsg) {
+	if msg.err != nil {
+		m.Home.publishersLoaded = true
+		m.Home.prefsLoaded = true
+		m.reportContentError("profile", msg.err)
+		return
+	}
+	m.Home.publishers = msg.publishers
+	m.Home.publishersLoaded = true
+	if m.defaultPublisher == "" && len(msg.publishers) > 0 {
+		m.defaultPublisher = msg.publishers[0].Name
+	}
+	m.Home.preferences = msg.preferences
+	m.Home.prefsLoaded = true
+	m.Home.setting = min(m.Home.setting, max(len(m.profileSettings())-1, 0))
+}
+
+// applyPreferenceWritten records a successful preference write.
+func (m *Model) applyPreferenceWritten(msg preferenceWrittenMsg) {
+	if msg.err != nil {
+		m.reportContentError("notification settings", msg.err)
+		return
+	}
+	found := false
+	for i := range m.Home.preferences {
+		if m.Home.preferences[i].Topic == msg.topic {
+			m.Home.preferences[i].Preference = msg.level
+			found = true
+		}
+	}
+	if !found {
+		m.Home.preferences = append(m.Home.preferences, api.NotificationPreference{Topic: msg.topic, Preference: msg.level})
+	}
+	m.setNotice(fmt.Sprintf("%s notifications: %s", msg.topic, api.NotificationPreferenceLabel(msg.level)))
+}
+
+// activateProfileSetting applies the highlighted setting.
+func (m *Model) activateProfileSetting() tea.Cmd {
+	row, ok := m.profileSettingAt(m.Home.setting)
+	if !ok {
+		return nil
+	}
+	switch row.kind {
+	case settingPublisher:
+		m.defaultPublisher = row.publisher.Name
+		m.setNotice("composer publisher: @" + row.publisher.Handle())
+		return nil
+	case settingTopic:
+		level := (m.preferenceLevel(row.topic.Topic) + 1) % 3
+		if err := m.sessionGuard("sign in to change notification settings"); err != nil {
+			return nil
+		}
+		return m.setPreferenceCmd(row.topic.Topic, level)
+	}
+	return nil
 }
 
 // profileLine renders level, experience and join date.
@@ -148,17 +397,33 @@ func (m *Model) updateHomeKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "q":
 		return m, tea.Quit
+	case "j", "down":
+		if h.setting < len(m.profileSettings())-1 {
+			h.setting++
+		}
+		return m, nil
+	case "k", "up":
+		if h.setting > 0 {
+			h.setting--
+		}
+		return m, nil
+	case "g":
+		h.setting = 0
+		return m, nil
+	case "G":
+		h.setting = max(len(m.profileSettings())-1, 0)
+		return m, nil
+	case "enter":
+		return m, m.activateProfileSetting()
 	case "r":
 		if h.refreshDisabled || m.Deps.Tokens == nil {
 			m.setBanner("session expired — press l to sign out")
 			return m, nil
 		}
-		if h.refreshing {
-			return m, nil
-		}
-		h.refreshing = true
+		h.publishersLoaded = false
+		h.prefsLoaded = false
 		m.clearBanner()
-		return m, m.forceRefreshCmd()
+		return m, tea.Batch(m.fetchAccountCmd(), m.loadProfileExtrasCmd(), m.notificationBadgeCmd())
 	case "l":
 		m.clearBanner()
 		return m, m.logoutCmd()
@@ -257,7 +522,15 @@ func (m *Model) handleAuthed(msg authedMsg) (tea.Model, tea.Cmd) {
 
 	m.Screen = ScreenHome
 	m.clearBanner()
-	return m, tea.Tick(time.Second, func(t time.Time) tea.Msg { return homeTickMsg{at: t} })
+	if m.defaultPublisher == "" && len(m.Home.publishers) > 0 {
+		m.defaultPublisher = m.Home.publishers[0].Name
+	}
+	return m, tea.Batch(
+		tea.Tick(time.Second, func(t time.Time) tea.Msg { return homeTickMsg{at: t} }),
+		m.ensureRealtime(),
+		m.loadProfileExtrasCmd(),
+		m.notificationBadgeCmd(),
+	)
 }
 
 // handleHomeTick re-arms the countdown and renews the token near expiry.

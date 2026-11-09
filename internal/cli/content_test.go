@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -216,5 +218,46 @@ func TestChatSend(t *testing.T) {
 	}
 	if id, _ := f.sent[0]["client_message_id"].(string); !strings.HasPrefix(id, "termian-") {
 		t.Fatalf("client_message_id = %v", f.sent[0]["client_message_id"])
+	}
+}
+
+// TestPublishArticleWithTagsAndAttachment covers the richer publish flags.
+func TestPublishArticleWithTagsAndAttachment(t *testing.T) {
+	f := newFakeServer(t)
+	login(t, f)
+
+	dir := t.TempDir()
+	article := filepath.Join(dir, "notes.md")
+	if err := os.WriteFile(article, []byte("# Markdown article\n\nBody.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	attachment := filepath.Join(dir, "cover.png")
+	if err := os.WriteFile(attachment, []byte("png"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res := f.run(t, "", "publish", "--type", "article", "--file", article,
+		"--tag", "go,tui", "--description", "a description", "--visibility", "2",
+		"--attach", attachment, "--output", "json")
+	if res.code != 0 {
+		t.Fatalf("publish exit = %d (stderr %s)", res.code, res.stderr)
+	}
+	if len(f.created) != 1 {
+		t.Fatalf("created = %v", f.created)
+	}
+	created := f.created[0]
+	if created["type"] != float64(1) || created["title"] != "Markdown article" {
+		t.Fatalf("created = %v", created)
+	}
+	if created["description"] != "a description" || created["visibility"] != float64(2) {
+		t.Fatalf("created = %v", created)
+	}
+	tags, _ := created["tags"].([]any)
+	if len(tags) != 2 || tags[0] != "go" || tags[1] != "tui" {
+		t.Fatalf("tags = %v", created["tags"])
+	}
+	ids, _ := created["attachments"].([]any)
+	if len(ids) != 1 || ids[0] != "file-1" {
+		t.Fatalf("attachments = %v", created["attachments"])
 	}
 }
