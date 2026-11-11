@@ -207,6 +207,45 @@ func (f *fakeServer) handle(w http.ResponseWriter, r *http.Request) {
 		f.revoked = true
 		w.WriteHeader(http.StatusNoContent)
 
+	case path == "/drive/files/root/children" && r.Method == http.MethodGet:
+		w.Header().Set("X-Total", "1")
+		io.WriteString(w, `[{"id":"f1","name":"Docs","is_folder":true,"created_at":"2026-11-09T00:00:00Z"}]`)
+
+	case path == "/drive/files/folders" && r.Method == http.MethodPost:
+		io.WriteString(w, `{"id":"f2","name":"Photos","is_folder":true}`)
+
+	case path == "/drive/files/f1" && r.Method == http.MethodGet:
+		w.Header().Set("Content-Disposition", `attachment; filename="test.txt"`)
+		io.WriteString(w, "file content here")
+
+	case path == "/drive/files/f1/recycle" && r.Method == http.MethodPost:
+		w.WriteHeader(http.StatusOK)
+
+	case path == "/drive/files/f1" && r.Method == http.MethodDelete:
+		w.WriteHeader(http.StatusNoContent)
+
+	case path == "/drive/billing/usage" && r.Method == http.MethodGet:
+		io.WriteString(w, `{"used_quota":1024,"total_quota":10485760,"total_file_count":5,"total_usage_bytes":1024}`)
+
+	case path == "/postal/mailboxes" && r.Method == http.MethodGet:
+		io.WriteString(w, `[{"id":"mb1","address":"alice@solian.app","name":"Alice","is_default":true}]`)
+
+	case path == "/postal/mailboxes/mb1/threads" && r.Method == http.MethodGet:
+		w.Header().Set("X-Total", "1")
+		io.WriteString(w, `[{"id":"th1","mailbox_id":"mb1","subject":"Welcome","message_count":1,"unread_count":1,"participants":["bob@solian.app"]}]`)
+
+	case path == "/postal/threads/th1" && r.Method == http.MethodGet:
+		io.WriteString(w, `[{"id":"em1","mailbox_id":"mb1","subject":"Welcome","body":"Hello Alice!","from_address":"bob@solian.app","from_name":"Bob","created_at":"2026-11-09T10:00:00Z"}]`)
+
+	case path == "/postal/emails" && r.Method == http.MethodPost:
+		io.WriteString(w, `{"id":"em2","mailbox_id":"mb1","subject":"Test Mail","body":"Hi"}`)
+
+	case path == "/postal/emails/em1/star" && r.Method == http.MethodPost:
+		w.WriteHeader(http.StatusOK)
+
+	case path == "/postal/emails/em1" && r.Method == http.MethodDelete:
+		w.WriteHeader(http.StatusNoContent)
+
 	default:
 		f.t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 		w.WriteHeader(http.StatusNotFound)

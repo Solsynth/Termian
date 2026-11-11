@@ -43,6 +43,14 @@ const (
 	RecordChatRoom    = "chat_room"
 	RecordChatMessage = "chat_message"
 	RecordChatSent    = "chat_sent"
+
+	// Drive and Mail records
+	RecordDriveFile  = "drive_file"
+	RecordDriveQuota = "drive_quota"
+	RecordMailbox    = "mailbox"
+	RecordMailThread = "mail_thread"
+	RecordMailEmail  = "mail_email"
+	RecordMailSent   = "mail_sent"
 )
 
 // UsageError reports an invalid invocation, so callers can map it to exit 2

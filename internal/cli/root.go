@@ -157,6 +157,8 @@ func (a *app) rootCommand() *cobra.Command {
 		a.publishersCommand(),
 		a.chatsCommand(),
 		a.chatCommand(),
+		a.driveCommand(),
+		a.mailCommand(),
 	)
 
 	return root

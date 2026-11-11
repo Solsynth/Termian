@@ -456,6 +456,82 @@ func (f *fakeContent) UploadFile(_ context.Context, name string, data []byte, co
 	return api.CloudFile{ID: "file-" + name, Name: name, MimeType: contentType, Size: int64(len(data))}, nil
 }
 
+func (f *fakeContent) DriveList(_ context.Context, parentID string, offset, take int) (api.Page[api.CloudFile], error) {
+	return api.Page[api.CloudFile]{
+		Items: []api.CloudFile{
+			{ID: "f1", Name: "Folder A", IsFolder: true},
+			{ID: "f2", Name: "Doc.txt", Size: 100},
+		},
+		Total: 2,
+	}, nil
+}
+
+func (f *fakeContent) DriveFileInfo(_ context.Context, id string) (api.CloudFile, error) {
+	return api.CloudFile{ID: id, Name: "file.txt", Size: 100}, nil
+}
+
+func (f *fakeContent) DriveCreateFolder(_ context.Context, name, parentID string) (api.CloudFile, error) {
+	return api.CloudFile{ID: "new-f", Name: name, IsFolder: true}, nil
+}
+
+func (f *fakeContent) DriveRename(_ context.Context, id, name string) (api.CloudFile, error) {
+	return api.CloudFile{ID: id, Name: name}, nil
+}
+
+func (f *fakeContent) DriveRecycle(_ context.Context, id string) error { return nil }
+func (f *fakeContent) DriveRestore(_ context.Context, id string) error { return nil }
+func (f *fakeContent) DriveDelete(_ context.Context, id string) error  { return nil }
+func (f *fakeContent) DriveDownload(_ context.Context, id string) ([]byte, string, error) {
+	return []byte("content"), "file.txt", nil
+}
+
+func (f *fakeContent) DriveUsage(_ context.Context) (api.DriveUsage, error) {
+	return api.DriveUsage{UsedQuota: 1024, TotalQuota: 10485760, TotalFileCount: 2}, nil
+}
+
+func (f *fakeContent) DriveQuota(_ context.Context) (api.DriveQuota, error) {
+	return api.DriveQuota{TotalQuota: 10485760}, nil
+}
+
+func (f *fakeContent) UploadDriveFile(_ context.Context, name string, data []byte, contentType, parentID string) (api.CloudFile, error) {
+	return api.CloudFile{ID: "f-" + name, Name: name, Size: int64(len(data))}, nil
+}
+
+func (f *fakeContent) Mailboxes(_ context.Context) ([]api.Mailbox, error) {
+	return []api.Mailbox{{ID: "mb1", Address: "user@solian.app", Name: "Primary", IsDefault: true}}, nil
+}
+
+func (f *fakeContent) MailThreads(_ context.Context, mailboxID, folder string, offset, take int) (api.Page[api.MailThread], error) {
+	return api.Page[api.MailThread]{
+		Items: []api.MailThread{
+			{ID: "th1", MailboxID: "mb1", Subject: "Hello", MessageCount: 1, UnreadCount: 1, Participants: []string{"bob@solian.app"}},
+		},
+		Total: 1,
+	}, nil
+}
+
+func (f *fakeContent) MailThread(_ context.Context, threadID string) ([]api.MailEmail, error) {
+	return []api.MailEmail{
+		{ID: "em1", MailboxID: "mb1", Subject: "Hello", Body: "Welcome to Solian!", FromAddress: "bob@solian.app", FromName: "Bob"},
+	}, nil
+}
+
+func (f *fakeContent) MailEmail(_ context.Context, emailID string) (api.MailEmail, error) {
+	return api.MailEmail{ID: emailID, Subject: "Hello", Body: "Welcome!"}, nil
+}
+
+func (f *fakeContent) SendMail(_ context.Context, input api.SendMailInput) (api.MailEmail, error) {
+	return api.MailEmail{ID: "em-sent", Subject: input.Subject, Body: input.Body}, nil
+}
+
+func (f *fakeContent) MarkMailRead(_ context.Context, emailID string, read bool) error { return nil }
+func (f *fakeContent) StarMail(_ context.Context, emailID string, star bool) error      { return nil }
+func (f *fakeContent) MoveMail(_ context.Context, emailID, folder string) error         { return nil }
+func (f *fakeContent) DeleteMail(_ context.Context, emailID string, permanent bool) error {
+	return nil
+}
+func (f *fakeContent) EmptyMailTrash(_ context.Context, mailboxID string) error { return nil }
+
 // called reports whether a recorded call matches prefix.
 func (f *fakeContent) called(prefix string) bool {
 	f.mu.Lock()

@@ -93,6 +93,42 @@ func (m *Model) quickItems() []quickItem {
 			return m, nil
 		},
 	})
+	items = append(items, quickItem{
+		id:          "nav-mail",
+		title:       "Mail & Conversations",
+		description: "Browse ElecPostal emails, threads, and inbox",
+		category:    categoryNav,
+		shortcut:    "5",
+		icon:        "✉",
+		action: func(m *Model) (tea.Model, tea.Cmd) {
+			m.showScreen(ScreenMail)
+			if !m.Mail.loaded {
+				if len(m.Mail.mailboxes) == 0 {
+					return m, m.loadMailboxesCmd()
+				}
+				return m, m.loadMailThreadsCmd(m.Mail.currentMailboxID(), m.Mail.folder)
+			}
+			return m, nil
+		},
+	})
+	items = append(items, quickItem{
+		id:          "nav-drive",
+		title:       "Drive & Storage",
+		description: "Browse files, folders and manage storage",
+		category:    categoryNav,
+		shortcut:    "6",
+		icon:        "📁",
+		action: func(m *Model) (tea.Model, tea.Cmd) {
+			m.showScreen(ScreenDrive)
+			if !m.Drive.loaded {
+				return m, tea.Batch(
+					m.loadDriveCmd(m.Drive.currentFolderID),
+					m.loadDriveUsageCmd(),
+				)
+			}
+			return m, nil
+		},
+	})
 
 	// 2. Actions
 	items = append(items, quickItem{

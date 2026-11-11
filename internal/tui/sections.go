@@ -8,6 +8,8 @@ type section int
 const (
 	sectionTimeline section = iota
 	sectionChats
+	sectionMail
+	sectionDrive
 	sectionBookmarks
 )
 
@@ -16,6 +18,10 @@ func (s section) String() string {
 	switch s {
 	case sectionChats:
 		return "chats"
+	case sectionMail:
+		return "mail"
+	case sectionDrive:
+		return "drive"
 	case sectionBookmarks:
 		return "bookmarks"
 	default:
@@ -28,6 +34,10 @@ func (m *Model) currentSection() section {
 	switch m.Screen {
 	case ScreenChats, ScreenChat:
 		return sectionChats
+	case ScreenMail, ScreenMailThread, ScreenMailCompose:
+		return sectionMail
+	case ScreenDrive:
+		return sectionDrive
 	case ScreenFeed, ScreenPost, ScreenCompose:
 		if m.Feed.mode == feedBookmarks {
 			return sectionBookmarks
@@ -77,6 +87,30 @@ func (m *Model) switchSection(target section) tea.Cmd {
 			return nil
 		}
 		return m.loadChatsCmd()
+	case sectionMail:
+		if err := m.sessionGuard("mail needs a session — press g to sign in"); err != nil {
+			return nil
+		}
+		m.showScreen(ScreenMail)
+		if m.Mail.loaded {
+			return nil
+		}
+		if len(m.Mail.mailboxes) == 0 {
+			return m.loadMailboxesCmd()
+		}
+		return m.loadMailThreadsCmd(m.Mail.currentMailboxID(), m.Mail.folder)
+	case sectionDrive:
+		if err := m.sessionGuard("drive needs a session — press g to sign in"); err != nil {
+			return nil
+		}
+		m.showScreen(ScreenDrive)
+		if m.Drive.loaded {
+			return nil
+		}
+		return tea.Batch(
+			m.loadDriveCmd(m.Drive.currentFolderID),
+			m.loadDriveUsageCmd(),
+		)
 	}
 	return nil
 }
@@ -87,6 +121,8 @@ func (m *Model) cycleSection() tea.Cmd {
 		sectionTimeline:  sectionChats,
 		sectionChats:     sectionBookmarks,
 		sectionBookmarks: sectionTimeline,
+		sectionMail:      sectionTimeline,
+		sectionDrive:     sectionTimeline,
 	}[m.currentSection()]
 	return m.switchSection(next)
 }
@@ -99,8 +135,10 @@ func (m *Model) sectionKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 	case "shift+tab":
 		prev := map[section]section{
 			sectionTimeline:  sectionBookmarks,
-			sectionChats:     sectionTimeline,
 			sectionBookmarks: sectionChats,
+			sectionChats:     sectionTimeline,
+			sectionMail:      sectionTimeline,
+			sectionDrive:     sectionTimeline,
 		}[m.currentSection()]
 		return m, m.switchSection(prev), true
 	}

@@ -25,7 +25,7 @@ func (m *Model) helpSections() []keybindingSection {
 	sections = append(sections, keybindingSection{
 		title: "Navigation & Global",
 		items: []keybindingItem{
-			{key: "1 - 4", desc: "Switch screen (Posts, Chat, Notifs, Profile)"},
+			{key: "1 - 6", desc: "Switch screen (Posts, Chat, Notifs, Profile, Mail, Drive)"},
 			{key: "/, Ctrl+K", desc: "Open command palette"},
 			{key: "Tab", desc: "Cycle section or feed tab"},
 			{key: "?", desc: "Toggle this keybinding dialog"},
@@ -105,6 +105,43 @@ func (m *Model) helpSections() []keybindingSection {
 			{key: "Ctrl+A", desc: "Attach file"},
 			{key: "Ctrl+P", desc: "Select publisher identity"},
 			{key: "Esc", desc: "Cancel and discard draft"},
+		}
+	case ScreenDrive:
+		screenTitle = "Drive & Cloud Storage"
+		screenItems = []keybindingItem{
+			{key: "j / k", desc: "Navigate files and folders"},
+			{key: "Enter", desc: "Open folder / view file"},
+			{key: "Backspace", desc: "Go up to parent folder"},
+			{key: "n", desc: "Create new folder"},
+			{key: "x", desc: "Delete / recycle item"},
+			{key: "r", desc: "Refresh directory & quota"},
+		}
+	case ScreenMail:
+		screenTitle = "Mail (ElecPostal)"
+		screenItems = []keybindingItem{
+			{key: "j / k", desc: "Navigate email threads"},
+			{key: "Enter", desc: "Read conversation thread"},
+			{key: "c", desc: "Compose new email"},
+			{key: "[ / ]", desc: "Switch folder (Inbox, Sent, Starred, Trash)"},
+			{key: "s", desc: "Toggle star"},
+			{key: "x", desc: "Move conversation to trash"},
+			{key: "r", desc: "Refresh messages"},
+		}
+	case ScreenMailThread:
+		screenTitle = "Conversation View"
+		screenItems = []keybindingItem{
+			{key: "j / k", desc: "Navigate messages"},
+			{key: "r", desc: "Reply to sender"},
+			{key: "x", desc: "Move to trash"},
+			{key: "Esc", desc: "Back to mail list"},
+		}
+	case ScreenMailCompose:
+		screenTitle = "Mail Composer"
+		screenItems = []keybindingItem{
+			{key: "Tab", desc: "Next input field"},
+			{key: "Shift+Tab", desc: "Previous input field"},
+			{key: "Ctrl+S", desc: "Send email"},
+			{key: "Esc", desc: "Cancel draft"},
 		}
 	}
 

@@ -59,6 +59,18 @@ moves to the session shell.
 | `termian publishers` | Lists the publishers you can post as |
 | `termian chats` | Lists chat rooms with unread counts |
 | `termian chat <room-id>` | Prints a room's messages; `--send --content …` posts one |
+| `termian drive ls [folder]` | Lists files and folders in Drive (`--take`, `--offset`) |
+| `termian drive upload <file>` | Uploads a local file to Drive (`--folder`, `--name`) |
+| `termian drive download <id>` | Downloads a file from Drive (`--out`) |
+| `termian drive mkdir <name>` | Creates a new folder in Drive (`--folder`) |
+| `termian drive rm <id>` | Moves a file to recycle bin (`--permanent` to purge) |
+| `termian drive quota` | Shows storage quota and usage breakdown |
+| `termian mail mailboxes` | Lists your ElecPostal mailboxes |
+| `termian mail list` | Lists email conversation threads (`--folder`, `--mailbox`, `--take`) |
+| `termian mail read <id>` | Reads a thread conversation or single email |
+| `termian mail send` | Sends an email (`--to`, `--subject`, `--body`, `--mailbox`, `--cc`) |
+| `termian mail star <id>` | Stars or unstars an email (`--remove`) |
+| `termian mail delete <id>` | Moves an email to trash (`--permanent` to purge) |
 | `termian version` | Prints the build version |
 
 `feed` and `post` read public data, so they work before signing in; `feed`
@@ -113,6 +125,15 @@ one line on stderr. Each record carries `type`:
 | `chats` | `{"type":"chat_room","room":{...}}` per room |
 | `chat` | `{"type":"chat_message","message":{...}}` oldest first |
 | `chat --send` | `{"type":"chat_sent","message":{...}}` |
+| `drive ls` | `{"type":"drive_file","file":{...}}` per item |
+| `drive upload` | `{"type":"drive_file","file":{...}}` |
+| `drive download` | `{"type":"drive_download","file_id","path","size","file_name"}` |
+| `drive mkdir` | `{"type":"drive_file","file":{...}}` |
+| `drive quota` | `{"type":"drive_quota","usage":{...}}` |
+| `mail mailboxes` | `{"type":"mailbox","mailbox":{...}}` per mailbox |
+| `mail list` | `{"type":"mail_thread","thread":{...}}` per conversation |
+| `mail read` | `{"type":"mail_email","email":{...}}` per email in thread |
+| `mail send` | `{"type":"mail_sent","email":{...}}` |
 | any failure | `{"type":"error","code","message","status","hint"}` on **stderr** |
 
 `react` follows the server's toggle semantics: posting a symbol that the account

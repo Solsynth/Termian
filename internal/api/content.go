@@ -21,13 +21,54 @@ type Page[T any] struct {
 
 // CloudFile is the attachment and picture shape served by Drive.
 type CloudFile struct {
+	ID              string      `json:"id"`
+	Name            string      `json:"name"`
+	MimeType        string      `json:"mime_type"`
+	Size            int64       `json:"size"`
+	URL             string      `json:"url"`
+	Width           int         `json:"width"`
+	Height          int         `json:"height"`
+	ParentID        *string     `json:"parent_id,omitempty"`
+	IsFolder        bool        `json:"is_folder"`
+	Indexed         bool        `json:"indexed"`
+	IsMarkedRecycle bool        `json:"is_marked_recycle"`
+	Usage           *string     `json:"usage,omitempty"`
+	CreatedAt       string      `json:"created_at,omitempty"`
+	UpdatedAt       string      `json:"updated_at,omitempty"`
+	Object          *FileObject `json:"object,omitempty"`
+}
+
+// FileObject holds the physical storage object properties.
+type FileObject struct {
 	ID       string `json:"id"`
-	Name     string `json:"name"`
-	MimeType string `json:"mime_type"`
 	Size     int64  `json:"size"`
-	URL      string `json:"url"`
-	Width    int    `json:"width"`
-	Height   int    `json:"height"`
+	MimeType string `json:"mime_type"`
+	Hash     string `json:"hash"`
+}
+
+// FileSize reports the resolved byte size of the file.
+func (f CloudFile) FileSize() int64 {
+	if f.Size > 0 {
+		return f.Size
+	}
+	if f.Object != nil && f.Object.Size > 0 {
+		return f.Object.Size
+	}
+	return 0
+}
+
+// FileMimeType reports the resolved MIME type.
+func (f CloudFile) FileMimeType() string {
+	if f.MimeType != "" {
+		return f.MimeType
+	}
+	if f.Object != nil && f.Object.MimeType != "" {
+		return f.Object.MimeType
+	}
+	if f.IsFolder {
+		return "folder"
+	}
+	return "application/octet-stream"
 }
 
 // Publisher is the author of a post: an account, a managed publisher or a

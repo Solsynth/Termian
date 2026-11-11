@@ -16,8 +16,13 @@ const DirectUploadLimit = 20 << 20
 // UploadFile uploads one file to Drive with the direct single-request endpoint
 // and returns its metadata. contentType defaults to application/octet-stream.
 func (c *Client) UploadFile(ctx context.Context, name string, data []byte, contentType string) (CloudFile, error) {
+	return c.UploadDriveFile(ctx, name, data, contentType, "")
+}
+
+// UploadDriveFile uploads one file to Drive with an optional parent folder ID.
+func (c *Client) UploadDriveFile(ctx context.Context, name string, data []byte, contentType, parentID string) (CloudFile, error) {
 	if len(data) > DirectUploadLimit {
-		return CloudFile{}, fmt.Errorf("attachment %q is larger than the %d MiB direct upload limit", filepath.Base(name), DirectUploadLimit>>20)
+		return CloudFile{}, fmt.Errorf("file %q is larger than the %d MiB direct upload limit", filepath.Base(name), DirectUploadLimit>>20)
 	}
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
@@ -33,6 +38,11 @@ func (c *Client) UploadFile(ctx context.Context, name string, data []byte, conte
 	}
 	if err := writer.WriteField("content_type", contentType); err != nil {
 		return CloudFile{}, err
+	}
+	if parentID != "" {
+		if err := writer.WriteField("parent_id", parentID); err != nil {
+			return CloudFile{}, err
+		}
 	}
 	if err := writer.Close(); err != nil {
 		return CloudFile{}, err

@@ -37,6 +37,10 @@ const (
 	ScreenChat
 	ScreenCompose
 	ScreenNotifications
+	ScreenDrive
+	ScreenMail
+	ScreenMailThread
+	ScreenMailCompose
 )
 
 // Router aliases
@@ -66,6 +70,14 @@ func (s Screen) String() string {
 		return "compose"
 	case ScreenNotifications:
 		return "notifications"
+	case ScreenDrive:
+		return "drive"
+	case ScreenMail:
+		return "mail"
+	case ScreenMailThread:
+		return "mail_thread"
+	case ScreenMailCompose:
+		return "mail_compose"
 	default:
 		return "unknown"
 	}
@@ -138,6 +150,31 @@ type ContentAPI interface {
 	SetNotificationPreference(context.Context, string, int) error
 	DeleteNotificationPreference(context.Context, string) error
 	UploadFile(context.Context, string, []byte, string) (api.CloudFile, error)
+
+	// Drive methods
+	DriveList(context.Context, string, int, int) (api.Page[api.CloudFile], error)
+	DriveFileInfo(context.Context, string) (api.CloudFile, error)
+	DriveCreateFolder(context.Context, string, string) (api.CloudFile, error)
+	DriveRename(context.Context, string, string) (api.CloudFile, error)
+	DriveRecycle(context.Context, string) error
+	DriveRestore(context.Context, string) error
+	DriveDelete(context.Context, string) error
+	DriveDownload(context.Context, string) ([]byte, string, error)
+	DriveUsage(context.Context) (api.DriveUsage, error)
+	DriveQuota(context.Context) (api.DriveQuota, error)
+	UploadDriveFile(context.Context, string, []byte, string, string) (api.CloudFile, error)
+
+	// Mail methods
+	Mailboxes(context.Context) ([]api.Mailbox, error)
+	MailThreads(context.Context, string, string, int, int) (api.Page[api.MailThread], error)
+	MailThread(context.Context, string) ([]api.MailEmail, error)
+	MailEmail(context.Context, string) (api.MailEmail, error)
+	SendMail(context.Context, api.SendMailInput) (api.MailEmail, error)
+	MarkMailRead(context.Context, string, bool) error
+	StarMail(context.Context, string, bool) error
+	MoveMail(context.Context, string, string) error
+	DeleteMail(context.Context, string, bool) error
+	EmptyMailTrash(context.Context, string) error
 }
 
 // commandTimeout bounds every asynchronous API call made from the UI.
@@ -203,6 +240,8 @@ type Model struct {
 	Confirm  confirmModel
 	// Notifications is the Ring activity stream.
 	Notifications notificationsModel
+	Drive         driveModel
+	Mail          mailModel
 	Deps          Deps
 
 	// guest is set when the session is browsing without a session, so the
@@ -259,6 +298,10 @@ type Snapshot struct {
 	Confirming     bool
 	QuickSwitch    bool
 	HelpOpen       bool
+	DriveCount     int
+	DriveSelected  int
+	MailCount      int
+	MailSelected   int
 }
 
 // Snapshot returns the current UI state under the model lock.
@@ -291,6 +334,10 @@ func (m *Model) Snapshot() Snapshot {
 		Confirming:     m.Confirm.active,
 		QuickSwitch:    m.quickSwitch,
 		HelpOpen:       m.helpOpen,
+		DriveCount:     len(m.Drive.items),
+		DriveSelected:  m.Drive.selected,
+		MailCount:      len(m.Mail.threads),
+		MailSelected:   m.Mail.selectedThread,
 	}
 	if m.Deps.Tokens != nil {
 		snap.SessionCredsOK = m.Deps.Tokens.Credentials() != nil
@@ -321,6 +368,8 @@ func NewModelWithScreen(deps Deps, screen Screen) *Model {
 		Chat:          newChatModel(),
 		Compose:       newComposeModel(),
 		Notifications: newNotificationsModel(),
+		Drive:         newDriveModel(),
+		Mail:          newMailModel(),
 		previews:      map[string][]string{},
 	}
 	m.Styles = newStyles(m.Dark)
@@ -442,6 +491,14 @@ func (m *Model) renderScreenBody() string {
 		body = m.composeView()
 	case ScreenNotifications:
 		body = m.notificationsView()
+	case ScreenDrive:
+		body = m.driveView()
+	case ScreenMail:
+		body = m.mailView()
+	case ScreenMailThread:
+		body = m.mailThreadView()
+	case ScreenMailCompose:
+		body = m.mailComposeView()
 	default:
 		body = m.Styles.Muted.Render("screen not found")
 	}
@@ -545,6 +602,24 @@ func (m *Model) renderHeader() string {
 		tabs = append(tabs, activeTabStyle.Render("[4] Profile"))
 	} else {
 		tabs = append(tabs, inactiveTabStyle.Render("[4] Profile"))
+	}
+
+	// [5] Mail
+	mailActive := m.Screen == ScreenMail || m.Screen == ScreenMailThread || m.Screen == ScreenMailCompose
+	mailLabel := "[5] Mail"
+	if mailActive {
+		tabs = append(tabs, activeTabStyle.Render(mailLabel))
+	} else {
+		tabs = append(tabs, inactiveTabStyle.Render(mailLabel))
+	}
+
+	// [6] Drive
+	driveActive := m.Screen == ScreenDrive
+	driveLabel := "[6] Drive"
+	if driveActive {
+		tabs = append(tabs, activeTabStyle.Render(driveLabel))
+	} else {
+		tabs = append(tabs, inactiveTabStyle.Render(driveLabel))
 	}
 
 	tabsBar := strings.Join(tabs, " ")
@@ -661,6 +736,12 @@ func (m *Model) isInputFocused() bool {
 		return true
 	}
 	if m.Screen == ScreenPassword {
+		return true
+	}
+	if m.Drive.creatingFolder {
+		return true
+	}
+	if m.Mail.composing {
 		return true
 	}
 	return false
@@ -854,6 +935,24 @@ func (m *Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, m.fetchAccountCmd()
 			}
 			return m, nil
+		case "5":
+			m.showScreen(ScreenMail)
+			if !m.Mail.loaded {
+				if len(m.Mail.mailboxes) == 0 {
+					return m, m.loadMailboxesCmd()
+				}
+				return m, m.loadMailThreadsCmd(m.Mail.currentMailboxID(), m.Mail.folder)
+			}
+			return m, nil
+		case "6":
+			m.showScreen(ScreenDrive)
+			if !m.Drive.loaded {
+				return m, tea.Batch(
+					m.loadDriveCmd(m.Drive.currentFolderID),
+					m.loadDriveUsageCmd(),
+				)
+			}
+			return m, nil
 		case "ctrl+k", "/":
 			m.quickSwitch = true
 			m.quickInput = ""
@@ -869,7 +968,7 @@ func (m *Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	// Tab switches sections from every content pane.
 	switch m.Screen {
-	case ScreenFeed, ScreenPost, ScreenChats, ScreenChat:
+	case ScreenFeed, ScreenPost, ScreenChats, ScreenChat, ScreenMail, ScreenDrive:
 		if updated, cmd, handled := m.sectionKey(key); handled {
 			return updated, cmd
 		}
@@ -891,6 +990,14 @@ func (m *Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.updateComposeKey(key)
 	case ScreenNotifications:
 		return m.updateNotificationKey(key)
+	case ScreenDrive:
+		return m.updateDriveKey(key)
+	case ScreenMail:
+		return m.updateMailKey(key)
+	case ScreenMailThread:
+		return m.updateMailThreadKey(key)
+	case ScreenMailCompose:
+		return m.updateMailComposeKey(key)
 	}
 	return m, nil
 }
@@ -898,6 +1005,10 @@ func (m *Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // handleScreenMsg routes asynchronous results to the pane that owns them.
 func (m *Model) handleScreenMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case driveLoadedMsg, driveUsageLoadedMsg, driveFolderCreatedMsg, driveItemRecycledMsg:
+		return m.updateDriveMsg(msg)
+	case mailboxesLoadedMsg, mailThreadsLoadedMsg, mailThreadLoadedMsg, mailSentMsg, mailActionMsg:
+		return m.updateMailMsg(msg)
 	case deviceCodeMsg, pollDueMsg, deviceTokenMsg, browserDoneMsg:
 		return m.updateLoginMsg(msg)
 	case challengeMsg, factorsMsg, factorCodeMsg, stepResultMsg, exchangedMsg, challengeTickMsg:
