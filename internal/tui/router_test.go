@@ -182,7 +182,101 @@ func TestRouterHeaderAndFooterLayout(t *testing.T) {
 
 	// Bottom lines are the footer frame
 	footerLine := lines[len(lines)-2]
-	if !strings.Contains(footerLine, "Switch Screen") {
+	if !strings.Contains(footerLine, "@guest") || !strings.Contains(footerLine, "Help") || !strings.Contains(footerLine, "Commands") {
 		t.Fatalf("footer line = %q", footerLine)
+	}
+}
+
+// TestRouterKeybindingPopup verifies pressing '?' displays the keybindings dialog.
+func TestRouterKeybindingPopup(t *testing.T) {
+	fake := &fakeAPI{}
+	content := newFakeContent()
+	deps := newContentDeps(t, fake, content, true)
+
+	model := NewModelWithScreen(deps, ScreenFeed)
+	model.Width, model.Height, model.sized = 100, 30, true
+	model.Feed.loaded = true
+
+	// Press '?' to toggle keybindings popup
+	updated, _ := model.Update(tea.KeyPressMsg{Code: '?', Text: "?"})
+	m := updated.(*Model)
+	if !m.helpOpen {
+		t.Fatal("help popup is not open after pressing '?'")
+	}
+	if !m.isInputFocused() {
+		t.Fatal("isInputFocused() should be true when help popup is open")
+	}
+
+	body := m.renderScreenBody()
+	if !strings.Contains(body, "Keyboard Shortcuts") || !strings.Contains(body, "Navigation & Global") {
+		t.Fatalf("help dialog body missing content: %s", body)
+	}
+
+	// Press '?' again to dismiss
+	updated, _ = m.Update(tea.KeyPressMsg{Code: '?', Text: "?"})
+	m = updated.(*Model)
+	if m.helpOpen {
+		t.Fatal("help popup did not close after pressing '?'")
+	}
+
+	// Press '?' then 'esc' to dismiss
+	updated, _ = m.Update(tea.KeyPressMsg{Code: '?', Text: "?"})
+	m = updated.(*Model)
+	if !m.helpOpen {
+		t.Fatal("help popup failed to reopen")
+	}
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	m = updated.(*Model)
+	if m.helpOpen {
+		t.Fatal("help popup failed to dismiss on Esc")
+	}
+}
+
+// TestRouterCommandPalette verifies opening, searching, and executing in the redesigned palette.
+func TestRouterCommandPalette(t *testing.T) {
+	fake := &fakeAPI{}
+	content := newFakeContent()
+	deps := newContentDeps(t, fake, content, true)
+
+	model := NewModelWithScreen(deps, ScreenFeed)
+	model.Width, model.Height, model.sized = 100, 30, true
+	model.Feed.loaded = true
+	model.Chats.rooms = content.rooms.Rooms
+
+	// Press '/' to open command palette
+	updated, _ := model.Update(tea.KeyPressMsg{Code: '/', Text: "/"})
+	m := updated.(*Model)
+	if !m.quickSwitch {
+		t.Fatal("quickSwitch palette did not open on '/'")
+	}
+
+	view := m.quickSwitchView()
+	if !strings.Contains(view, "Command Palette") {
+		t.Fatalf("palette view missing header: %s", view)
+	}
+
+	// Type filter query "theme"
+	for _, ch := range "theme" {
+		updated, _ = m.Update(tea.KeyPressMsg{Code: rune(ch), Text: string(ch)})
+		m = updated.(*Model)
+	}
+	if m.quickInput != "theme" {
+		t.Fatalf("palette input = %q, want 'theme'", m.quickInput)
+	}
+
+	items := m.quickItems()
+	if len(items) != 1 || items[0].id != "act-toggle-theme" {
+		t.Fatalf("filtered items = %+v, want 1 toggle-theme action", items)
+	}
+
+	// Press enter to execute toggle theme
+	darkBefore := m.Dark
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(*Model)
+	if m.quickSwitch {
+		t.Fatal("palette remained open after executing action")
+	}
+	if m.Dark == darkBefore {
+		t.Fatalf("theme did not toggle: was %v, still %v", darkBefore, m.Dark)
 	}
 }

@@ -229,6 +229,7 @@ type Model struct {
 	quickSwitch         bool
 	quickInput          string
 	quickSelected       int
+	helpOpen            bool
 }
 
 // Snapshot is a consistent view of the model's state.
@@ -256,6 +257,8 @@ type Snapshot struct {
 	Composing      bool
 	Editing        bool
 	Confirming     bool
+	QuickSwitch    bool
+	HelpOpen       bool
 }
 
 // Snapshot returns the current UI state under the model lock.
@@ -286,6 +289,8 @@ func (m *Model) Snapshot() Snapshot {
 		Composing:      m.Compose.active,
 		Editing:        m.Compose.editing != nil,
 		Confirming:     m.Confirm.active,
+		QuickSwitch:    m.quickSwitch,
+		HelpOpen:       m.helpOpen,
 	}
 	if m.Deps.Tokens != nil {
 		snap.SessionCredsOK = m.Deps.Tokens.Credentials() != nil
@@ -418,6 +423,9 @@ func (m *Model) renderLoginFlow() string {
 func (m *Model) renderScreenBody() string {
 	if m.quickSwitch {
 		return m.quickSwitchView()
+	}
+	if m.helpOpen {
+		return m.helpView()
 	}
 
 	var body string
@@ -552,7 +560,7 @@ func (m *Model) renderHeader() string {
 	return title + borderStyle.Render(strings.Repeat("─", gap)) + tabsBar + borderStyle.Render("─┐")
 }
 
-// renderFooter draws the persistent global footer with user identity, keybinds and status.
+// renderFooter draws the persistent global footer with user identity and status.
 func (m *Model) renderFooter() string {
 	width := m.Width
 	if width < MinWidth {
@@ -568,11 +576,14 @@ func (m *Model) renderFooter() string {
 	} else if m.Home.identity.Name != "" {
 		userHandle = "@" + m.Home.identity.Name
 	}
-	deviceTag := "ed25519"
-	if m.Deps.DeviceID != "" {
-		deviceTag = m.Deps.DeviceID
+
+	var userTag string
+	if userHandle == "@guest" {
+		userTag = lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render(userHandle)
+	} else {
+		userTag = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#EEEEEE")).Render(userHandle)
 	}
-	userTag := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#AAAAAA")).Render(fmt.Sprintf("%s (%s)", userHandle, deviceTag))
+
 	live := ""
 	if m.Deps.Realtime != nil && m.realtimeStarted {
 		if m.Deps.Realtime.Connected() {
@@ -591,46 +602,41 @@ func (m *Model) renderFooter() string {
 		}
 	}
 
-	var keybinds string
-	switch {
-	case m.Confirm.active:
-		keybinds = "[y] Confirm │ [n] Cancel"
-	case m.Compose.active:
-		keybinds = "[Ctrl+D] Publish │ [Ctrl+O] Markdown │ [Ctrl+A] Attach │ [Ctrl+P] Publisher │ [Esc] Cancel"
-	case (m.Screen == ScreenChats || m.Screen == ScreenChat) && m.Chat.typing:
-		keybinds = "[Enter] Send │ [Alt+Enter] Newline │ [Esc] Normal Mode"
-	case m.Screen == ScreenChats || m.Screen == ScreenChat:
-		if m.Chats.focused {
-			keybinds = "[j/k] Messages │ [h/Esc] Rooms │ [i] Write │ [1-4] Screens │ [q] Quit"
-		} else {
-			keybinds = "[j/k] Rooms │ [Enter/l] Open │ [1-4] Screens │ [q] Quit"
-		}
-	case m.Screen == ScreenFeed:
-		keybinds = "[1-4] Switch Screen │ [/] Search │ [c] New Post │ [q] Quit"
-	case m.Screen == ScreenPost:
-		keybinds = "[1-4] Switch Screen │ [j/k] Scroll │ [n] Reply │ [Esc] Feed │ [q] Quit"
-	case m.Screen == ScreenNotifications:
-		keybinds = "[j/k] Select │ [Enter] Open │ [a] Read All │ [d] Delete │ [R] Reload │ [q] Quit"
-	case m.Screen == ScreenHome:
-		keybinds = "[j/k] Settings │ [Enter] Change │ [r] Refresh │ [n] New Post │ [l] Logout"
-	default:
-		keybinds = "[1-4] Switch Screen │ [q] Quit"
+	leftSide := userTag + live
+	if status != "" {
+		leftSide += sep + status
 	}
 
-	keyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#888888"))
-	statusLine := userTag + live
-	if status != "" {
-		statusLine += sep + status
-	}
-	statusLine += sep + keyStyle.Render(keybinds)
+	helpKey := lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Bold(true).Render("?")
+	helpLabel := lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render(" Help")
+	cmdKey := lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Bold(true).Render("/")
+	cmdLabel := lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render(" Commands")
+	rightSide := helpKey + helpLabel + sep + cmdKey + cmdLabel
 
 	innerWidth := width - 4
 	if innerWidth < 1 {
 		innerWidth = 1
 	}
 
+	leftWidth := ansi.StringWidth(leftSide)
+	rightWidth := ansi.StringWidth(rightSide)
+
+	var lineContent string
+	if leftWidth+rightWidth+2 <= innerWidth {
+		gap := innerWidth - leftWidth - rightWidth
+		lineContent = leftSide + strings.Repeat(" ", gap) + rightSide
+	} else {
+		singleHelp := helpKey + helpLabel
+		if leftWidth+ansi.StringWidth(singleHelp)+2 <= innerWidth {
+			gap := innerWidth - leftWidth - ansi.StringWidth(singleHelp)
+			lineContent = leftSide + strings.Repeat(" ", gap) + singleHelp
+		} else {
+			lineContent = padRight(leftSide, innerWidth)
+		}
+	}
+
 	line1 := borderStyle.Render("├" + strings.Repeat("─", width-2) + "┤")
-	line2 := borderStyle.Render("│ ") + padRight(statusLine, innerWidth) + borderStyle.Render(" │")
+	line2 := borderStyle.Render("│ ") + padRight(lineContent, innerWidth) + borderStyle.Render(" │")
 	line3 := borderStyle.Render("└" + strings.Repeat("─", width-2) + "┘")
 
 	return lipgloss.JoinVertical(lipgloss.Left, line1, line2, line3)
@@ -640,6 +646,9 @@ func (m *Model) renderFooter() string {
 // avoiding hijacking global keys like '1', '2', 'c', or 'q'.
 func (m *Model) isInputFocused() bool {
 	if m.quickSwitch {
+		return true
+	}
+	if m.helpOpen {
 		return true
 	}
 	if m.Confirm.active {
@@ -809,6 +818,9 @@ func (m *Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.quickSwitch {
 		return m.updateQuickSwitchKey(key)
 	}
+	if m.helpOpen {
+		return m.updateHelpKey(key)
+	}
 	if m.Confirm.active {
 		return m.updateConfirmKey(key)
 	}
@@ -846,6 +858,9 @@ func (m *Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.quickSwitch = true
 			m.quickInput = ""
 			m.quickSelected = 0
+			return m, nil
+		case "?":
+			m.helpOpen = true
 			return m, nil
 		case "q":
 			return m, tea.Quit
@@ -955,6 +970,8 @@ func (m *Model) handleScreenMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 // showScreen switches panes and clears transient status.
 func (m *Model) showScreen(screen Screen) {
 	m.Screen = screen
+	m.quickSwitch = false
+	m.helpOpen = false
 	m.clearBanner()
 }
 
